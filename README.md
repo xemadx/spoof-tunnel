@@ -46,10 +46,10 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.3.3**:
+To explicitly install **v0.3.4**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.3/install.sh | SPOOF_RELEASE=v0.3.3 bash
+curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.4/install.sh | SPOOF_RELEASE=v0.3.4 bash
 ```
 
 Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS`. No Go, Node.js or Rust toolchain is needed on the VPS.
@@ -137,13 +137,13 @@ Rotating local spoof sources require the **same list in the other end's allowed-
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.3.3 bash scripts/build.sh
+SPOOF_VERSION=v0.3.4 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
 The build exports the frontend, embeds it in `spoof-panel`, builds `spoof-l3` and packages both with the installer and documentation. GitHub Actions validates the source before creating release packages for both architectures.
 
-Validation includes **25 ordered carrier combinations**, **five rotating-source cases**, delayed heartbeats above three seconds RTT, and **one Iran + three simultaneous foreign peers on all five carriers** with concurrent TCP/UDP probes and isolated stop/restart. **14 browser scenarios** cover panel behavior and locally served Persian fonts; Go race tests and real HTTP/SQLite tests cover the backend. Reproduce them with [Testing](docs/TESTING.md). See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md) and the [fix report](docs/FIXES-2026-11-01.md).
+Validation includes **25 ordered carrier combinations**, **five rotating-source cases**, delayed heartbeats above three seconds RTT, and **one Iran + three simultaneous foreign peers on all five carriers** with concurrent TCP/UDP probes and isolated stop/restart. **15 browser scenarios** cover panel behavior and locally served Persian fonts; Go race tests and real HTTP/SQLite tests cover the backend. Reproduce them with [Testing](docs/TESTING.md). See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md) and the [fix report](docs/FIXES-2026-11-01.md).
 
 ## Limits and attribution
 

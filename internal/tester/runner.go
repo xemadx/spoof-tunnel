@@ -38,14 +38,17 @@ type TesterResult struct {
 
 // TesterState represents the overall state.
 type TesterState struct {
-	Status      string         `json:"status"` // "idle", "running", "done", "error"
-	Mode        string         `json:"mode"`
-	Error       string         `json:"error,omitempty"`
-	Progress    int            `json:"progress"` // 0-100
-	TotalIPs    int64          `json:"total_ips"`
-	PassedCount int            `json:"passed_count"`
-	RecvCount   int            `json:"recv_count"`
-	Results     []TesterResult `json:"results,omitempty"`
+	Status        string         `json:"status"` // "idle", "running", "done", "error"
+	Mode          string         `json:"mode"`
+	Error         string         `json:"error,omitempty"`
+	Progress      int            `json:"progress"` // 0-100
+	ProcessedIPs  int64          `json:"processed_ips"`
+	SentPackets   int64          `json:"sent_packets"`
+	FailedPackets int64          `json:"failed_packets"`
+	TotalIPs      int64          `json:"total_ips"`
+	PassedCount   int            `json:"passed_count"`
+	RecvCount     int            `json:"recv_count"`
+	Results       []TesterResult `json:"results,omitempty"`
 }
 
 // Runner manages a tester execution.
@@ -285,6 +288,13 @@ func (r *Runner) RunSender(cfg TesterConfig, ranges *IPRangeSet) error {
 		defer close(done)
 		err := r.doSend(cfg, ranges, cancelCh)
 		r.mu.Lock()
+		select {
+		case <-cancelCh:
+			r.state.Status = "idle"
+			r.mu.Unlock()
+			return
+		default:
+		}
 		if err != nil {
 			r.state.Status = "error"
 			r.state.Error = err.Error()

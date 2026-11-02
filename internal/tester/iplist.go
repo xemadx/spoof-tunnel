@@ -146,8 +146,11 @@ func (s *IPRangeSet) IterateIPs(fn func(ip net.IP) bool) {
 	for _, r := range s.ranges {
 		for v := r.Start; ; v++ {
 			binary.BigEndian.PutUint32(ipBuf, v)
-			if !fn(ipBuf) || v == r.End {
+			if !fn(ipBuf) {
 				return
+			}
+			if v == r.End {
+				break
 			}
 		}
 	}

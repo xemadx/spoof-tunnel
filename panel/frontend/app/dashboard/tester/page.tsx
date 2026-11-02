@@ -26,6 +26,9 @@ type TesterState = {
   error?: string;
   progress: number;
   total_ips: number;
+  processed_ips?: number;
+  sent_packets?: number;
+  failed_packets?: number;
   passed_count: number;
   recv_count: number;
   results: TesterResult[];
@@ -409,6 +412,15 @@ const next = await api.testerStatus();
           )}
 
           {state.error && <div role="alert" className="banner error">{state.error}</div>}
+
+          {state.mode === "sender" && (
+            <div className="stack" aria-label="شمارنده‌های واقعی فرستنده">
+              <p>IPهای پردازش‌شده: <strong className="mono">{(state.processed_ips ?? 0).toLocaleString("fa-IR")} / {state.total_ips.toLocaleString("fa-IR")}</strong></p>
+              <p>بسته‌های پذیرفته‌شده برای ارسال: <strong className="mono">{(state.sent_packets ?? 0).toLocaleString("fa-IR")}</strong></p>
+              <p>خطاهای ارسال: <strong className="mono">{(state.failed_packets ?? 0).toLocaleString("fa-IR")}</strong></p>
+              <p className="hint">ارسال در فرستنده، دریافت در مقصد را ثابت نمی‌کند؛ نتیجهٔ عبور هر IP را در گیرنده بررسی کن.</p>
+            </div>
+          )}
 
           {(results.length > 0 || state.recv_count > 0) && (
             <div className="stack">

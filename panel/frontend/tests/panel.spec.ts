@@ -188,3 +188,13 @@ test('dashboard cycles peer health by ID and retains selection through refresh a
  await expect(page.getByRole('region', { name: 'وضعیت پیوند شبکه' })).toBeVisible();
  await expect(page.getByRole('button', { name: 'اتصال بعدی', exact: true })).toHaveCount(0);
 });
+
+test('sender completion reports real processed sources and packet counters', async ({ page }) => {
+ await mock(page);
+ await page.route('**/api/tester/status', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ status: 'done', mode: 'sender', progress: 100, total_ips: 6, processed_ips: 6, sent_packets: 60, failed_packets: 0, results: [] }) }));
+ await page.goto(prefix + '/dashboard/tester/');
+ const counters = page.getByLabel('شمارنده‌های واقعی فرستنده');
+ await expect(counters).toContainText('۶ / ۶');
+ await expect(counters).toContainText('۶۰');
+ await expect(counters).toContainText('خطاهای ارسال: ۰');
+});

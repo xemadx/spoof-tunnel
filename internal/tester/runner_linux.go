@@ -39,8 +39,15 @@ func (r *Runner) doSend(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan stru
 	log.Printf("[tester-sender] protocol=%s dst=%s sources=%d packets_per_ip=%d",
 		cfg.Protocol, dstIP, total, packetCount)
 
-	var sent, errCount int
+	var sent, errCount int64
 	var idx int
+	defer func() {
+		r.mu.Lock()
+		r.state.ProcessedIPs = int64(idx)
+		r.state.SentPackets = sent
+		r.state.FailedPackets = errCount
+		r.mu.Unlock()
+	}()
 	ranges.IterateIPs(func(srcIP net.IP) bool {
 		// Check cancel
 		select {
@@ -74,11 +81,17 @@ func (r *Runner) doSend(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan stru
 		idx++
 		r.mu.Lock()
 		r.state.Progress = int(int64(idx) * 100 / total)
+		r.state.ProcessedIPs = int64(idx)
+		r.state.SentPackets = sent
+		r.state.FailedPackets = errCount
 		r.mu.Unlock()
 		return true
 	})
 
 	log.Printf("[tester-sender] done -- sent: %d, errors: %d", sent, errCount)
+	if int64(idx) != total {
+		return fmt.Errorf("sender stopped after %d of %d source IPs", idx, total)
+	}
 	if errCount > 0 {
 		return fmt.Errorf("%d packets failed to send (%d sent)", errCount, sent)
 	}
