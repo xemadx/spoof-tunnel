@@ -85,3 +85,33 @@ func TestStaleConfigCannotOverwriteNewPool(t *testing.T) {
 		t.Fatal("lost updated pool")
 	}
 }
+
+func TestTesterStatusIncludesSenderCounters(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.InitDB(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d, _ := database.DB(); d.Close() }()
+	user := db.User{Username: "admin", PasswordHash: "unused"}
+	database.Create(&user)
+	token, _ := auth.GenerateToken(user.ID, user.Username)
+	server := NewServer(database, manager.NewManager(database, "unused", dir), "/prefix", "test")
+	defer server.Close()
+	request := httptest.NewRequest("GET", "/prefix/api/tester/status", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response := httptest.NewRecorder()
+	server.Router().ServeHTTP(response, request)
+	if response.Code != 200 {
+		t.Fatal(response.Body.String())
+	}
+	var state map[string]json.RawMessage
+	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"processed_ips", "sent_packets", "failed_packets"} {
+		if string(state[key]) != "0" {
+			t.Fatalf("counter %s missing or wrong: %s", key, response.Body)
+		}
+	}
+}

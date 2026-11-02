@@ -46,10 +46,10 @@ curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/main/install.
 - نسخه هنگام بیلد داخل پنل و موتور ثبت می‌شود؛ برچسب بالای پنل نسخهٔ باینری در حال اجراست.
 - پنل HTTP ارائه می‌کند؛ برای مدیریت از راه دور، HTTPS reverse proxy یا SSH forwarding تنظیم کنید.
 
-برای نصب مشخصاً نسخهٔ **v0.3.4**:
+برای نصب مشخصاً نسخهٔ **v0.3.5**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.4/install.sh | SPOOF_RELEASE=v0.3.4 bash
+curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.5/install.sh | SPOOF_RELEASE=v0.3.5 bash
 ```
 
 خروجی انتشار شامل `spoof-tunnel-linux-amd64.tar.gz`، نسخهٔ `arm64` و فایل checksum آرشیوها یعنی `SHA256SUMS` است. روی VPS به Go، Node.js یا Rust نیاز ندارید.
@@ -139,7 +139,7 @@ journalctl -u spoof-panel -n 100 --no-pager
 برای بیلد از Linux/WSL، نسخهٔ Go مشخص‌شده در [go.mod](go.mod)، Node.js 24 و npm استفاده کنید:
 
 ```sh
-SPOOF_VERSION=v0.3.4 bash scripts/build.sh
+SPOOF_VERSION=v0.3.5 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 

@@ -647,7 +647,7 @@ func (s *Server) handleTesterStatus(c *gin.Context) {
 			state.Results = results
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"status": state.Status, "mode": state.Mode, "error": state.Error, "progress": state.Progress, "total_ips": state.TotalIPs, "passed_count": state.PassedCount, "recv_count": state.RecvCount, "results": state.Results, "preview_limit": 200})
+	c.JSON(http.StatusOK, gin.H{"status": state.Status, "mode": state.Mode, "error": state.Error, "progress": state.Progress, "total_ips": state.TotalIPs, "processed_ips": state.ProcessedIPs, "sent_packets": state.SentPackets, "failed_packets": state.FailedPackets, "passed_count": state.PassedCount, "recv_count": state.RecvCount, "results": state.Results, "preview_limit": 200})
 }
 
 func (s *Server) handleTesterStop(c *gin.Context) {

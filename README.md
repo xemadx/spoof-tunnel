@@ -46,10 +46,10 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.3.4**:
+To explicitly install **v0.3.5**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.4/install.sh | SPOOF_RELEASE=v0.3.4 bash
+curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.5/install.sh | SPOOF_RELEASE=v0.3.5 bash
 ```
 
 Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS`. No Go, Node.js or Rust toolchain is needed on the VPS.
@@ -137,7 +137,7 @@ Rotating local spoof sources require the **same list in the other end's allowed-
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.3.4 bash scripts/build.sh
+SPOOF_VERSION=v0.3.5 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
