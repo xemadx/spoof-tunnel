@@ -46,10 +46,10 @@ curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/main/install.
 - نسخه هنگام بیلد داخل پنل و موتور ثبت می‌شود؛ برچسب بالای پنل نسخهٔ باینری در حال اجراست.
 - پنل HTTP ارائه می‌کند؛ برای مدیریت از راه دور، HTTPS reverse proxy یا SSH forwarding تنظیم کنید.
 
-برای نصب مشخصاً نسخهٔ **v0.3.2**:
+برای نصب مشخصاً نسخهٔ **v0.3.3**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.2/install.sh | SPOOF_RELEASE=v0.3.2 bash
+curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.3/install.sh | SPOOF_RELEASE=v0.3.3 bash
 ```
 
 خروجی انتشار شامل `spoof-tunnel-linux-amd64.tar.gz`، نسخهٔ `arm64` و فایل checksum آرشیوها یعنی `SHA256SUMS` است. روی VPS به Go، Node.js یا Rust نیاز ندارید.
@@ -139,7 +139,7 @@ journalctl -u spoof-panel -n 100 --no-pager
 برای بیلد از Linux/WSL، نسخهٔ Go مشخص‌شده در [go.mod](go.mod)، Node.js 24 و npm استفاده کنید:
 
 ```sh
-SPOOF_VERSION=v0.3.2 bash scripts/build.sh
+SPOOF_VERSION=v0.3.3 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
@@ -154,3 +154,5 @@ sudo bash dist/install.sh
 موفقیت در namespaceهای ایزوله، تضمین پذیرش spoof در دیتاسنتر، عبور از فیلترینگ یا سرعت پایدار تولیدی نیست. جفت VPS واقعی را جداگانه آزمایش کنید. ARM64 cross-compile می‌شود؛ آزمون روی سخت‌افزار ARM64 و نصب systemd روی VPS واقعی، بررسی‌های جداگانهٔ استقرارند. طراحی رمزنگاری ممیزی مستقل نشده است.
 
 بر پایهٔ [ParsaKSH/spoof-tunnel](https://github.com/ParsaKSH/spoof-tunnel)، با حفظ سابقهٔ upstream و مجوز [Apache-2.0](LICENSE)؛ [NOTICE](NOTICE) را ببینید. این پروژه PenguTunnel نیست و با پروتکل آن سازگار نیست.
+
+بازیابی رمز هنگام آپدیت: در منوی نصب گزینهٔ **۲** رمز جدید تولید و نمایش می‌دهد؛ گزینهٔ **۱** رمز فعلی را حفظ می‌کند. منو حتی با `curl | bash` از ترمینال خوانده می‌شود. برای بازنشانی صریح بدون منو، اسکریپت را به `SPOOF_PASSWORD_ACTION=reset bash` بدهید. اطلاعات ورود نصب اول و بازنشانی در پایان نصب موفق نمایش داده می‌شوند؛ رمز خام روی دیسک ذخیره نمی‌شود.

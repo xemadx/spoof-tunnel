@@ -7,7 +7,7 @@ command -v ip >/dev/null || { echo 'Install iproute2 first.' >&2; exit 1; }
 [[ -c /dev/net/tun ]] || { echo '/dev/net/tun unavailable; enable TUN on the VPS.' >&2; exit 1; }
 
 src=$(cd "$(dirname "$0")" && pwd)
-for file in spoof-l3 spoof-panel; do
+for file in spoof-l3 spoof-panel setup-credentials.sh; do
   [[ -f "$src/$file" ]] || { echo "Missing $src/$file; use the built dist package." >&2; exit 1; }
 done
 
@@ -41,8 +41,14 @@ systemctl stop spoof-panel.service 2>/dev/null || true
 install -m 755 "$src/spoof-l3" /etc/spoof-panel/spoof-l3
 install -m 755 "$src/spoof-panel" /opt/spoof-panel/spoof-panel
 
-# Initialize credentials on first install; upgrades preserve the password.
-/opt/spoof-panel/spoof-panel --setup
+# Read from /dev/tty even when this installer arrives through curl | bash.
+source "$src/setup-credentials.sh"
+setup_output=$(spoof_setup_credentials /opt/spoof-panel/spoof-panel /etc/spoof-panel)
+# Make the documented CLI available without replacing a custom regular file.
+if [[ ! -e /usr/local/bin/spoof-panel || -L /usr/local/bin/spoof-panel ]]; then
+  install -d -m 755 /usr/local/bin
+  ln -sfn /opt/spoof-panel/spoof-panel /usr/local/bin/spoof-panel
+fi
 
 cat > /etc/systemd/system/spoof-panel.service <<'UNIT'
 [Unit]
@@ -95,4 +101,8 @@ echo "  Service : spoof-panel ($state)"
 echo "  Status  : systemctl status spoof-panel"
 echo "  Logs    : journalctl -u spoof-panel -f"
 echo "  Creds   : cat /etc/spoof-panel/credentials.txt"
+printf '%s\n' "$setup_output"
+unset setup_output
+printf '%s\n' '  Save a displayed new password now; it is not stored in plaintext.'
+printf '%s\n' '  Forgot it? Rerun the installer and choose 2 to generate and display a new password.'
 echo ""

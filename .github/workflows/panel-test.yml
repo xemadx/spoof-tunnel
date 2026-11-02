@@ -42,6 +42,7 @@ jobs:
       - run: python3 scripts/smoke_panel.py
         env:
           SPOOF_PANEL_BINARY: dist/spoof-panel
+      - run: python3 scripts/test_installer_credentials.py
       - name: Share the tested frontend with release jobs
         uses: actions/upload-artifact@v4
         with:

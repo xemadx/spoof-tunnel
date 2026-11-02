@@ -18,7 +18,7 @@ if ARCH not in {"amd64", "arm64"}:
     raise SystemExit("supported package architectures: amd64, arm64")
 PREFIX = f"spoof-tunnel-linux-{ARCH}"
 BINARIES = ["spoof-l3", "spoof-panel"]
-TEXT_FILES = ["install.sh", "README.md", "README-fa.md", "LICENSE", "NOTICE", "SHA256SUMS"]
+TEXT_FILES = ["setup-credentials.sh", "install.sh", "README.md", "README-fa.md", "LICENSE", "NOTICE", "SHA256SUMS"]
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -48,13 +48,14 @@ def main() -> None:
 
     # Installer must ship the local setup script, never the download shim.
     shutil.copy2(ROOT / "scripts" / "install.sh", DIST / "install.sh")
+    shutil.copy2(ROOT / "scripts" / "setup-credentials.sh", DIST / "setup-credentials.sh")
     for name in ["README.md", "README-fa.md", "LICENSE", "NOTICE"]:
         shutil.copy2(ROOT / name, DIST / name)
 
-    for name in ["install.sh", "README.md", "README-fa.md", "LICENSE", "NOTICE"]:
+    for name in ["setup-credentials.sh", "install.sh", "README.md", "README-fa.md", "LICENSE", "NOTICE"]:
         source = DIST / name
         source.write_bytes(source.read_bytes().replace(b"\r\n", b"\n"))
-    sums = "".join(f"{sha256(DIST / name)}  {name}\n" for name in BINARIES + ["install.sh"])
+    sums = "".join(f"{sha256(DIST / name)}  {name}\n" for name in BINARIES + ["install.sh", "setup-credentials.sh"])
     (DIST / "SHA256SUMS").write_bytes(sums.encode("utf-8"))
     print("SHA256SUMS:\n" + sums)
 
