@@ -49,3 +49,8 @@ npm's download cache is restored using the frontend lockfile. Go module and comp
 ## v0.3.9 review regressions
 
 See [review assessment and probe compatibility](REVIEW-2026-11-04.md). `integration_tester.py` includes immediate startup, maximum 1000-packet ICMP/TCP delivery, rejected/duplicate accounting and canceled-send coverage in a loopback-only namespace. `integration_multipeer.py` also verifies that live edits return 409 without stopping the core and that recovery state is exported. `integration_forward.py` checks a real delayed TUN startup, cancellation and fail-closed routing in a private namespace. The browser suite now has 19 scenarios. Unprivileged Go tests check synchronous raw-socket permission errors; privileged namespace tests prove reception.
+
+
+## v0.3.10 connection-card layout
+
+The browser suite has 21 scenarios. Two new regressions reproduce mixed Persian/Latin tunnel names and asymmetric carriers in dark desktop (1132 px) and light mobile (320 px) views. They check that role/carrier/interface values match their labels, Latin values retain LTR direction, chips and their text do not overlap, the name does not overlap the status, and the document has no horizontal overflow. Card screenshots are saved in Playwright's test output for visual inspection.

@@ -247,3 +247,40 @@ test('recovery budget and exhaustion are visible on the dashboard', async ({ pag
  await expect(card).toContainText('بازیابی پس از ۸ تلاش متوقف شد');
  await expect(card).toContainText('دوباره راه‌اندازی کن');
 });
+
+
+for (const scenario of [
+ {name:'desktop dark local',width:1132,theme:'dark',mode:'local',send:'icmp',receive:'udp',sendLabel:'ICMP',receiveLabel:'UDP',role:'ایران',title:'تونل ماهان - ترکیه · local',iface:'sp105607'},
+ {name:'mobile light remote',width:320,theme:'light',mode:'remote',send:'experimental',receive:'ipip',sendLabel:'IP 253',receiveLabel:'IPIP',role:'خارج',title:'تونل ماهان - ترکیه · remote با نام طولانی برای بررسی نمایش صحیح',iface:'sp1234567890123'},
+]) {
+ test(`connection metadata stays readable without overlap: ${scenario.name}`,async({page},testInfo)=>{
+  await mock(page);
+  await page.setViewportSize({width:scenario.width,height:900});
+  await page.addInitScript(theme=>localStorage.setItem('spoof-theme',theme),scenario.theme);
+  const instance={id:1,name:scenario.title,mode:scenario.mode,engine:'tun',status:'running',uptime:16620,send_transport:scenario.send,recv_transport:scenario.receive,tun_interface:scenario.iface,tun_address:'10.77.0.1/30',tun_peer:'10.77.0.2',remote_addr:'192.0.2.2',client_ip:'192.0.2.1',spoof_ip:'198.51.100.1',remote_port:8090,recv_port:5001,listen_port:8090,client_port:5001,enabled:true};
+  await page.route('**/api/instances',route=>route.fulfill({contentType:'application/json',body:JSON.stringify([instance])}));
+  await page.goto(prefix+'/dashboard/tunnels/');
+  const card=page.locator('.conn-card');
+  await expect(card.getByRole('link',{name:scenario.title,exact:true})).toBeVisible();
+  const metadata=card.getByLabel('مشخصات اتصال');
+  for(const [label,value] of [['سمت',scenario.role],['ارسال',scenario.sendLabel],['دریافت',scenario.receiveLabel],['رابط',scenario.iface]]){
+   const item=metadata.locator('.conn-meta-item').filter({has:page.locator('dt',{hasText:new RegExp('^'+label+'$')})});
+   await expect(item.locator('dd')).toHaveText(value);
+  }
+  await page.evaluate(()=>document.fonts.ready);
+  const geometry=await card.evaluate(card=>{
+   const overlap=(a:DOMRect,b:DOMRect)=>Math.min(a.right,b.right)-Math.max(a.left,b.left)>1&&Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>1;
+   const items=Array.from(card.querySelectorAll('.conn-meta-item'));
+   const boxes=items.map(item=>item.getBoundingClientRect());
+   return {
+    overlap:boxes.some((a,i)=>boxes.some((b,j)=>i!==j&&overlap(a,b))),
+    textOverlap:items.some(item=>overlap(item.querySelector('dt')!.getBoundingClientRect(),item.querySelector('dd')!.getBoundingClientRect())),
+    headerOverlap:overlap(card.querySelector('.conn-title')!.getBoundingClientRect(),card.querySelector('.conn-head > .pill')!.getBoundingClientRect()),
+    overflow:document.documentElement.scrollWidth>innerWidth,
+    directions:Array.from(card.querySelectorAll('.conn-meta-item bdi')).map(value=>getComputedStyle(value).direction),
+   };
+  });
+  expect(geometry).toEqual({overlap:false,textOverlap:false,headerOverlap:false,overflow:false,directions:['ltr','ltr','ltr']});
+  await card.screenshot({path:testInfo.outputPath('connection-card.png')});
+ });
+}

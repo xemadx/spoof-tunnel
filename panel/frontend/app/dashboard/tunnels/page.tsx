@@ -51,6 +51,11 @@ const LABEL: Record<string, string> = {
   error: "خطا",
 };
 
+const CARRIER_LABELS: Record<string, string> = {
+  icmp: "ICMP", tcp: "TCP", udp: "UDP", ipip: "IPIP", experimental: "IP 253",
+};
+function carrierLabel(value: string) { return CARRIER_LABELS[value] || value || "—"; }
+
 function size(n = 0) {
   if (n < 1024) return `${n} B`;
   const u = ["KB", "MB", "GB"];
@@ -226,19 +231,19 @@ export default function TunnelsPage() {
           return (
             <article className="panel conn-card" key={i.id}>
               <header className="conn-head">
-                <div className="row">
+                <div className="conn-identity">
                   <span className={`status-dot ${i.status}`} aria-hidden="true" />
-                  <div>
-                    <Link className="conn-title" href={`${base}/dashboard/tunnels/edit?id=${i.id}`}>{i.name}</Link>
-                    <div className="sub">
-                      <span className={`mode-badge ${i.mode}`}>{i.mode === "local" ? "ایران · local" : "خارج · remote"}</span>
-                      <span className="mono" dir="ltr">{i.send_transport} ➔ {i.recv_transport}</span>
-                      <span className="mono" style={{ color: "var(--accent-cyan)", fontSize: 11 }}>{i.tun_interface || "tun"}</span>
-                    </div>
-                  </div>
+                  <Link className="conn-title" href={`${base}/dashboard/tunnels/edit?id=${i.id}`}><bdi dir="auto">{i.name}</bdi></Link>
                 </div>
                 <span className={`pill ${i.status}`}>{LABEL[i.status] || i.status}</span>
               </header>
+
+              <dl className="conn-meta" aria-label="مشخصات اتصال">
+                <div className={`conn-meta-item mode-badge ${i.mode}`}><dt>سمت</dt><dd>{i.mode === "local" ? "ایران" : "خارج"}</dd></div>
+                <div className="conn-meta-item"><dt>ارسال</dt><dd className="mono"><bdi dir="ltr">{carrierLabel(i.send_transport)}</bdi></dd></div>
+                <div className="conn-meta-item"><dt>دریافت</dt><dd className="mono"><bdi dir="ltr">{carrierLabel(i.recv_transport)}</bdi></dd></div>
+                {i.engine === "tun" && <div className="conn-meta-item"><dt>رابط</dt><dd className="mono"><bdi dir="ltr">{i.tun_interface || "—"}</bdi></dd></div>}
+              </dl>
 
               <div className="conn-grid">
                 <div><span className="k">سرور طرف مقابل</span><span className="v mono" dir="ltr">{endpoint || "—"}</span></div>

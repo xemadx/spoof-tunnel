@@ -303,9 +303,17 @@ button, input, select, textarea { font: inherit; }
 .stat-label { font-size: 13px; color: var(--text-muted); }
 .stat-value { font-size: 32px; font-weight: 800; font-variant-numeric: tabular-nums; }
 .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
-.conn-card { gap: 14px; }
+.conn-card { gap: 14px; min-width: 0; }
 .conn-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.conn-title { font-weight: 700; text-decoration: none; }
+.conn-identity { display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; }
+.conn-identity .status-dot { flex: none; margin-block-start: 8px; }
+.conn-head > .pill { flex: none; white-space: nowrap; }
+.conn-title { min-width: 0; font-weight: 700; line-height: 1.7; text-decoration: none; overflow-wrap: anywhere; }
+.conn-meta { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.conn-meta-item { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; padding: 5px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--card-2); font-size: 12px; line-height: 1.6; }
+.conn-meta-item dt { flex: none; color: var(--text-muted); }
+.conn-meta-item dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.conn-meta-item bdi { unicode-bidi: isolate; }
 .conn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .conn-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 14px; }
 .conn-telemetry { display: flex; gap: 14px; flex-wrap: wrap; color: var(--text-muted); font-size: 13px; }
