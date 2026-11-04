@@ -95,6 +95,11 @@ def main():
                     if all(status['telemetry']['peer_connected'] for status in statuses):break
                     time.sleep(.2)
                 else:raise AssertionError('all peers were not authenticated')
+                # A live edit must be rejected without stopping any core.
+                live=api('GET',f'/instances/{ids[0]}')['instance']
+                api('PUT',f'/instances/{ids[0]}',live,expected=409)
+                api('PUT',f'/instances/{ids[0]}/spoof-ips',{'content':'198.51.100.10'},expected=409)
+                assert api('GET',f'/instances/{ids[0]}/status')['status']=='running'
                 def probe(index):
                     run('ip','netns','exec',NAMES[0],'python3','-c',CLIENT_CODE,f'10.77.0.{2+index*4}',str(11001+index),f'FOREIGN-{index+1}:',timeout=15)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=6) as workers:
@@ -115,6 +120,8 @@ def main():
                         except RuntimeError:pass
                     time.sleep(.2)
                 else:raise AssertionError('crashed core was not recovered')
+                recovery=api('GET',f'/instances/{ids[0]}/status')['recovery']
+                assert recovery['attempts']>=1 and recovery['max_attempts']==8 and not recovery['exhausted'],recovery
                 api('POST',f'/instances/{ids[0]}/stop',{})
                 probe(1);probe(2)  # Stopping one tunnel must leave its neighbours operational.
                 assert not api('GET',f'/instances/{ids[0]}/forwards')[0]['listening']

@@ -36,6 +36,8 @@ type Instance struct {
 	wanted            bool
 	epoch             uint64
 	retryCancel       chan struct{}
+	retryExhausted    bool
+	retryNextAt       time.Time
 	retryCount        int
 	recovering        bool
 	actionMu          sync.Mutex
@@ -74,6 +76,7 @@ func newInstance(id uint) *Instance {
 
 // Manager manages multiple tunnel instances
 type Manager struct {
+	recoveryDelay func(int) time.Duration // fixed at construction; tests may shorten backoff
 	mutationGuard *sync.Mutex
 	db            *gorm.DB
 	binaryPath    string
@@ -85,6 +88,7 @@ type Manager struct {
 // NewManager creates a new multi-instance tunnel manager
 func NewManager(database *gorm.DB, binaryPath, configDir string) *Manager {
 	return &Manager{
+		recoveryDelay: recoveryBackoff,
 		mutationGuard: new(sync.Mutex),
 		db:            database,
 		binaryPath:    binaryPath,
@@ -591,6 +595,8 @@ func (inst *Instance) newIntent(wanted bool) {
 	inst.epoch++
 	inst.wanted = wanted
 	inst.retryCount = 0
+	inst.retryExhausted = false
+	inst.retryNextAt = time.Time{}
 	inst.recovering = false
 }
 func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
@@ -609,17 +615,20 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 			inst.mu.Unlock()
 			return
 		}
-		attempt := inst.retryCount
-		number := attempt + 1
-		inst.retryCount++
+		if inst.retryCount >= maxRecoveryAttempts {
+			inst.wanted, inst.recovering, inst.retryExhausted = false, false, true
+			inst.retryNextAt = time.Time{}
+			inst.status = StatusError
+			inst.error = fmt.Sprintf("automatic recovery stopped after %d attempts; inspect logs/configuration and start manually: %s", maxRecoveryAttempts, inst.error)
+			message := inst.error
+			inst.mu.Unlock()
+			streamLogs(inst, strings.NewReader("[supervisor] "+message+"\n"))
+			return
+		}
+		number := inst.retryCount + 1
+		delay := m.recoveryDelay(inst.retryCount)
+		inst.retryNextAt = time.Now().Add(delay)
 		inst.mu.Unlock()
-		if attempt > 5 {
-			attempt = 5
-		}
-		delay := time.Second * time.Duration(1<<attempt)
-		if delay > 30*time.Second {
-			delay = 30 * time.Second
-		}
 		log.Printf("[manager] instance %d recovery in %s", inst.ID, delay)
 		streamLogs(inst, strings.NewReader(fmt.Sprintf("[supervisor] automatic recovery in %s (attempt %d)\n", delay, number)))
 		timer := time.NewTimer(delay)
@@ -651,6 +660,10 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 			}
 			return
 		}
+		inst.mu.Lock()
+		inst.retryCount++
+		inst.retryNextAt = time.Time{}
+		inst.mu.Unlock()
 		err := m.startInstance(inst.ID)
 		if err == nil {
 			m.StartForwarders(inst.ID)
@@ -676,3 +689,35 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 
 // MutationGuard is the stable control-plane lock shared with API transactions.
 func (m *Manager) MutationGuard() *sync.Mutex { return m.mutationGuard }
+
+const maxRecoveryAttempts = 8
+
+func recoveryBackoff(attempt int) time.Duration {
+	if attempt > 5 {
+		attempt = 5
+	}
+	delay := time.Second * time.Duration(1<<attempt)
+	if delay > 30*time.Second {
+		return 30 * time.Second
+	}
+	return delay
+}
+
+type RecoveryState struct {
+	Active      bool  `json:"active"`
+	Attempts    int   `json:"attempts"`
+	MaxAttempts int   `json:"max_attempts"`
+	NextRetryAt int64 `json:"next_retry_at"`
+	Exhausted   bool  `json:"exhausted"`
+}
+
+func (m *Manager) RecoveryStatus(id uint) RecoveryState {
+	inst := m.getInstance(id)
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	state := RecoveryState{Active: inst.recovering, Attempts: inst.retryCount, MaxAttempts: maxRecoveryAttempts, Exhausted: inst.retryExhausted}
+	if !inst.retryNextAt.IsZero() {
+		state.NextRetryAt = inst.retryNextAt.Unix()
+	}
+	return state
+}

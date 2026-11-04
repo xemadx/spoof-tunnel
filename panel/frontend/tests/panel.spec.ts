@@ -223,3 +223,27 @@ test('test-code copy remains usable when HTTP clipboard access is unavailable', 
  await page.getByRole('button',{name:'کپی کد آزمون',exact:true}).click();
  await expect(page.getByText('کد را دستی کپی کن.',{exact:true})).toBeVisible();
 });
+
+
+test('receiver explains rejected probes even when no source passed', async ({ page }) => {
+ await mock(page);
+ await page.route('**/api/tester/status',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({status:'done',mode:'receiver',progress:100,total_ips:6,recv_count:0,rejected_probes:12,duplicate_probes:9,results:[]})}));
+ await page.goto(prefix+'/dashboard/tester/');
+ const counters=page.getByLabel('شمارنده‌های اعتبارسنجی گیرنده');
+ await expect(counters).toContainText('پروب‌های ردشده: ۱۲');
+ await expect(counters).toContainText('بسته‌های تکراری: ۹');
+ await expect(counters).toContainText('ترافیک نامرتبط یا خراب');
+});
+
+test('recovery budget and exhaustion are visible on the dashboard', async ({ page }) => {
+ await mock(page);
+ let exhausted=false;
+ await page.route('**/api/dashboard',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({total:1,running_count:0,stopped_count:0,error_count:1,instances:[{id:1,name:'Recovery peer',mode:'local',engine:'tun',status:'error',uptime:0,recovery:{active:!exhausted,attempts:exhausted?8:2,max_attempts:8,next_retry_at:0,exhausted},telemetry:{peer_connected:false,tx_bytes:0,rx_bytes:0,drops:0,last_peer:0}}]})}));
+ await page.goto(prefix+'/dashboard/');
+ const card=page.getByRole('region',{name:'Recovery peer'});
+ await expect(card).toContainText('بازیابی خودکار فعال است؛ ۲ از ۸');
+ exhausted=true;
+ await page.getByRole('button',{name:'به‌روزرسانی',exact:true}).click();
+ await expect(card).toContainText('بازیابی پس از ۸ تلاش متوقف شد');
+ await expect(card).toContainText('دوباره راه‌اندازی کن');
+});

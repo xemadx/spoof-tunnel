@@ -1,7 +1,11 @@
 package tester
 
 import (
+	"encoding/binary"
+	"errors"
 	"net"
+	"runtime"
+	"syscall"
 	"testing"
 )
 
@@ -36,10 +40,17 @@ func TestReceiverCreatesFreshCodesAndSenderRequiresOne(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		runner := NewRunner()
 		runner.SetTmpDir(t.TempDir())
-		if err := runner.RunReceiver(cfg, ranges); err != nil {
-			t.Fatal(err)
+		startErr := runner.RunReceiver(cfg, ranges)
+		if startErr != nil && runtime.GOOS == "linux" && !errors.Is(startErr, syscall.EPERM) {
+			t.Fatal(startErr)
 		}
-		id := runner.State().TestID
+		state := runner.State()
+		if startErr != nil && (state.Status != "error" || state.Error == "") {
+			t.Fatal("startup error was not published", startErr, state)
+		}
+		// Unprivileged CI can still check fresh codes and synchronous failure;
+		// actual reception is exercised with CAP_NET_RAW in a private namespace.
+		id := state.TestID
 		runner.Stop()
 		if !ValidTestID(id) || id == previous {
 			t.Fatal("receiver did not create fresh code")
@@ -62,5 +73,44 @@ func TestProbeWireChecksums(t *testing.T) {
 		if protocol == "tcp" && tcpChecksum(src.To4(), dst.To4(), p[20:]) != 0 {
 			t.Fatal("bad TCP checksum")
 		}
+	}
+}
+
+func TestTCPProbeIsPayloadFreeAndCorrelatesEverySequence(t *testing.T) {
+	src, dst := net.ParseIP("198.18.0.1"), net.ParseIP("192.0.2.1")
+	cfg := TesterConfig{TestID: "0123456789abcdef0123456789abcdef", Protocol: "tcp", DstPort: 19119, PacketCount: 1000}
+	for i := uint32(0); i < 1000; i++ {
+		p := buildProbe(cfg, src, dst, i)
+		if len(p) != 40 || p[32] != 0x50 || p[33] != 2 || binary.BigEndian.Uint16(p[4:6]) == 0 {
+			t.Fatalf("not a plain SYN at %d", i)
+		}
+		if n, err := tcpProbeSequence(p, 20, cfg.TestID, cfg.PacketCount); err != nil || n != i {
+			t.Fatalf("sequence %d: %d %v", i, n, err)
+		}
+		if internetChecksum(p[:20]) != 0 || tcpChecksum(src.To4(), dst.To4(), p[20:]) != 0 {
+			t.Fatal("bad checksum")
+		}
+		for _, offset := range []int{4, 12, 20, 24} {
+			altered := append([]byte{}, p...)
+			altered[offset] ^= 1
+			if _, err := tcpProbeSequence(altered, 20, cfg.TestID, 1000); err == nil {
+				t.Fatalf("accepted mutation at %d", offset)
+			}
+		}
+		if _, err := tcpProbeSequence(p, 20, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1000); err == nil {
+			t.Fatal("accepted wrong code")
+		}
+		if _, err := tcpProbeSequence(p, 20, cfg.TestID, 999); err == nil {
+			t.Fatal("accepted wrong count")
+		}
+	}
+}
+
+func TestTCPReceiverAcceptsPreviousPayloadFormat(t *testing.T) {
+	src, dst := net.ParseIP("198.18.0.1"), net.ParseIP("192.0.2.1")
+	id := "0123456789abcdef0123456789abcdef"
+	p := append(BuildTCPSyn(src, dst, 19119), probePayload(id, src, 7, 10)...)
+	if seq, err := tcpProbeSequence(p, 20, id, 10); err != nil || seq != 7 {
+		t.Fatal(seq, err)
 	}
 }

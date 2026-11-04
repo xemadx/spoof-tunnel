@@ -109,7 +109,7 @@ func TestTesterStatusIncludesSenderCounters(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &state); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"processed_ips", "sent_packets", "failed_packets"} {
+	for _, key := range []string{"processed_ips", "sent_packets", "failed_packets", "rejected_probes", "duplicate_probes"} {
 		if string(state[key]) != "0" {
 			t.Fatalf("counter %s missing or wrong: %s", key, response.Body)
 		}

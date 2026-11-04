@@ -38,6 +38,7 @@ jobs:
         working-directory: panel/frontend
       - run: sudo env SPOOF_PANEL_BINARY="$PWD/dist/spoof-panel" python3 scripts/integration_tester_api.py
       - run: sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" python3 scripts/integration_tester.py
+      - run: sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" python3 scripts/integration_forward.py
       - run: sudo env SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
       - run: sudo env SPOOF_MTU_TEST=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
       - run: sudo env SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_delay.py

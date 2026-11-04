@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "@/lib/link";
 import { Dialog } from "@/lib/dialog";
-import { api } from "@/lib/api";
+import { api, type RecoveryState } from "@/lib/api";
+import { RecoveryNotice } from "@/lib/recovery";
 import { useBasePath } from "@/lib/basepath";
 import { useToast } from "@/lib/toast";
 import {
@@ -16,6 +17,7 @@ import {
 } from "@/lib/icons";
 
 type Instance = {
+ recovery?: RecoveryState;
   id: number;
   name: string;
   mode: string;
@@ -246,6 +248,7 @@ export default function TunnelsPage() {
               </div>
 
               {i.status_error && <div className="inline-error">{i.status_error}</div>}
+              <RecoveryNotice state={i.recovery} />
 
               <footer className="conn-foot">
                 <div className="conn-telemetry">

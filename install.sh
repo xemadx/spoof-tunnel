@@ -11,9 +11,9 @@ for cmd in curl tar sha256sum; do command -v "$cmd" >/dev/null || { echo "Instal
 asset="spoof-tunnel-linux-$arch.tar.gz"
 if [[ -n "${SPOOF_RELEASE:-}" ]]; then
   [[ "$SPOOF_RELEASE" =~ ^(panel-|emad-)?v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release tag.' >&2; exit 1; }
-  base="https://github.com/emad1381/spoof-tunnel/releases/download/$SPOOF_RELEASE"
+  base="https://github.com/xemadx/spoof-tunnel/releases/download/$SPOOF_RELEASE"
 else
-  base='https://github.com/emad1381/spoof-tunnel/releases/latest/download'
+  base='https://github.com/xemadx/spoof-tunnel/releases/latest/download'
 fi
 work=$(mktemp -d -t spoof-install.XXXXXX)
 trap 'rm -rf -- "$work"' EXIT

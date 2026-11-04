@@ -39,18 +39,20 @@ type TesterResult struct {
 
 // TesterState represents the overall state.
 type TesterState struct {
-	TestID        string         `json:"test_id,omitempty"`
-	Status        string         `json:"status"` // "idle", "running", "done", "error"
-	Mode          string         `json:"mode"`
-	Error         string         `json:"error,omitempty"`
-	Progress      int            `json:"progress"` // 0-100
-	ProcessedIPs  int64          `json:"processed_ips"`
-	SentPackets   int64          `json:"sent_packets"`
-	FailedPackets int64          `json:"failed_packets"`
-	TotalIPs      int64          `json:"total_ips"`
-	PassedCount   int            `json:"passed_count"`
-	RecvCount     int            `json:"recv_count"`
-	Results       []TesterResult `json:"results,omitempty"`
+	RejectedProbes  uint64         `json:"rejected_probes"`
+	DuplicateProbes uint64         `json:"duplicate_probes"`
+	TestID          string         `json:"test_id,omitempty"`
+	Status          string         `json:"status"` // "idle", "running", "done", "error"
+	Mode            string         `json:"mode"`
+	Error           string         `json:"error,omitempty"`
+	Progress        int            `json:"progress"` // 0-100
+	ProcessedIPs    int64          `json:"processed_ips"`
+	SentPackets     int64          `json:"sent_packets"`
+	FailedPackets   int64          `json:"failed_packets"`
+	TotalIPs        int64          `json:"total_ips"`
+	PassedCount     int            `json:"passed_count"`
+	RecvCount       int            `json:"recv_count"`
+	Results         []TesterResult `json:"results,omitempty"`
 }
 
 // Runner manages a tester execution.
@@ -64,12 +66,14 @@ type Runner struct {
 	tmpDir      string
 
 	// Live receiver state — accessible during test for real-time monitoring
-	recvMu        sync.RWMutex
-	received      map[uint32]int
-	receivedOrder []uint32
-	recvPassed    int
-	recvCfgPkt    int     // packetCount for current run
-	recvCfgLoss   float64 // maxPacketLoss for current run
+	recvMu         sync.RWMutex
+	received       map[uint32]int
+	receivedOrder  []uint32
+	recvRejected   uint64
+	recvDuplicates uint64
+	recvPassed     int
+	recvCfgPkt     int     // packetCount for current run
+	recvCfgLoss    float64 // maxPacketLoss for current run
 }
 
 // NewRunner creates a new tester runner.
@@ -111,6 +115,11 @@ func (r *Runner) State() TesterState {
 		r.recvMu.RUnlock()
 	}
 
+	if s.Mode == "receiver" {
+		r.recvMu.RLock()
+		s.RejectedProbes, s.DuplicateProbes = r.recvRejected, r.recvDuplicates
+		r.recvMu.RUnlock()
+	}
 	if s.Results == nil {
 		s.Results = []TesterResult{}
 	}
@@ -344,6 +353,7 @@ func (r *Runner) RunReceiver(cfg TesterConfig, ranges *IPRangeSet) error {
 	}
 	// Initialize live receiver state
 	r.recvMu.Lock()
+	r.recvRejected, r.recvDuplicates = 0, 0
 	r.received = make(map[uint32]int)
 	r.receivedOrder = nil
 	r.recvPassed = 0
@@ -357,9 +367,10 @@ func (r *Runner) RunReceiver(cfg TesterConfig, ranges *IPRangeSet) error {
 
 	r.mu.Unlock()
 
+	ready := make(chan error, 1)
 	go func() {
 		defer close(done)
-		err := r.doReceive(cfg, ranges, cancelCh)
+		err := r.doReceive(cfg, ranges, cancelCh, ready)
 		r.mu.Lock()
 		if err != nil {
 			r.state.Status = "error"
@@ -371,6 +382,10 @@ func (r *Runner) RunReceiver(cfg TesterConfig, ranges *IPRangeSet) error {
 		r.mu.Unlock()
 	}()
 
+	if err := <-ready; err != nil {
+		<-done // make the error state visible before returning
+		return err
+	}
 	return nil
 }
 

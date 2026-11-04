@@ -206,3 +206,62 @@ func TestOldProcessTelemetryCannotOverwriteRecoveredGeneration(t *testing.T) {
 		t.Fatalf("old process overwrote new telemetry: %+v", inst.telemetry)
 	}
 }
+
+func TestRecoveryBudgetExhaustionAndExplicitStartReset(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.InitDB(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d, _ := database.DB(); d.Close() }()
+	binary := filepath.Join(dir, "spoof-l3")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := db.TunnelInstance{Name: "crash-loop", Engine: "tun", Mode: "local", LocalIP: "192.0.2.1", RemoteAddr: "192.0.2.2", SpoofIP: "198.51.100.1", PeerSpoofIP: "198.51.100.2", SendTransport: "icmp", RecvTransport: "icmp", RemotePort: 8090, RecvPort: 5001, TunInterface: "spbudget", TunAddress: "10.77.0.1/30", TunPeer: "10.77.0.2", TunMTU: 1280, PSK: base64.StdEncoding.EncodeToString(make([]byte, 32))}
+	if err := database.Create(&cfg).Error; err != nil {
+		t.Fatal(err)
+	}
+	manager := NewManager(database, "unused", dir)
+	manager.recoveryDelay = func(int) time.Duration { return 5 * time.Millisecond }
+	defer manager.StopAll()
+	if err := manager.StartInstance(cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !manager.RecoveryStatus(cfg.ID).Exhausted {
+		if time.Now().After(deadline) {
+			t.Fatal("crash loop did not stop")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	state := manager.RecoveryStatus(cfg.ID)
+	if state.Active || state.Attempts != 8 || state.NextRetryAt != 0 {
+		t.Fatalf("bad exhausted state: %+v", state)
+	}
+	status, message := manager.InstanceStatus(cfg.ID)
+	if status != StatusError || !strings.Contains(message, "start manually") {
+		t.Fatal(status, message)
+	}
+	inst := manager.getInstance(cfg.ID)
+	inst.mu.Lock()
+	generation := inst.processGeneration
+	inst.mu.Unlock()
+	time.Sleep(50 * time.Millisecond)
+	inst.mu.Lock()
+	unchanged := inst.processGeneration == generation
+	inst.mu.Unlock()
+	if !unchanged || generation != 9 {
+		t.Fatal("unexpected number of automatic starts", generation)
+	}
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\ntrap 'exit 0' INT TERM\nwhile :; do sleep 0.05; done\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartInstance(cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	state = manager.RecoveryStatus(cfg.ID)
+	if state.Exhausted || state.Attempts != 0 || state.Active {
+		t.Fatalf("manual start did not reset budget: %+v", state)
+	}
+}

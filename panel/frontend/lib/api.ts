@@ -1,15 +1,16 @@
 import { getBasePath } from './basepath';
 export type Telemetry = { peer_connected: boolean; source_rejected?: number; last_rejected_source?: string; invalid_packets?: number; mtu_rejected?: number; clock_rejected?: number; clock_skew_seconds?: number; tx_bytes: number; rx_bytes: number; tx_packets: number; rx_packets: number; drops: number; last_peer: number; rtt_ms?: number };
+export type RecoveryState = { active: boolean; attempts: number; max_attempts: number; next_retry_at: number; exhausted: boolean };
 export type TunnelInstance = {
  id: number; name: string; mode: string; engine: string; enabled: boolean; status: string; uptime: number; error?: string; status_error?: string;
  send_transport: string; recv_transport: string; remote_addr: string; client_ip: string; local_ip: string; tun_interface: string; tun_address: string; tun_peer: string; tun_mtu: number;
  spoof_ip: string; peer_spoof_ip: string; spoof_ip_list: string; peer_spoof_ip_list: string; remote_port: number; recv_port: number; listen_port: number; client_port: number; psk: string; updated_at?: string;
 };
 export type TesterResult = { ip: string; received: number; sent: number; loss_pct: number; passed: boolean };
-export type TesterState = { test_id?: string; status: string; mode: string; error?: string; progress: number; total_ips: number; passed_count: number; recv_count: number; results: TesterResult[]; preview_limit?: number };
+export type TesterState = { test_id?: string; rejected_probes?: number; duplicate_probes?: number; status: string; mode: string; error?: string; progress: number; total_ips: number; passed_count: number; recv_count: number; results: TesterResult[]; preview_limit?: number };
 type ForwardStatus = { rule: { id: number; name: string; protocol: string; listen_port: number; target_port: number; enabled: boolean }; target: string; listening: boolean; stats: { listening: boolean; connections: number; bytes_up: number; bytes_down: number; last_error: string } };
 type System = { hostname: string; os: string; arch: string; cpus: number; memory_mb: number; go_version: string; panel_version: string };
-type Dashboard = { total: number; running_count: number; stopped_count: number; error_count: number; instances: (TunnelInstance & { telemetry: Telemetry })[] | null };
+type Dashboard = { total: number; running_count: number; stopped_count: number; error_count: number; instances: (TunnelInstance & { telemetry: Telemetry; recovery?: RecoveryState })[] | null };
 type End = Record<string, string | number | boolean>;
 function apiBase() { return typeof window === 'undefined' ? '/api' : `${window.location.origin}${getBasePath()}/api`; }
 function getToken() { return typeof window === 'undefined' ? null : localStorage.getItem('token'); }
@@ -45,15 +46,15 @@ export const api = {
  login: (username: string, password: string) => request<{ token: string; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
  me: () => request<{ id: number; username: string }>('/auth/me'),
  dashboard: () => request<Dashboard>('/dashboard'), system: () => request<System>('/system'),
- listInstances: () => request<TunnelInstance[]>('/instances'),
+ listInstances: () => request<(TunnelInstance & { recovery?: RecoveryState })[]>('/instances'),
  createInstance: (data: unknown) => request<TunnelInstance>('/instances', { method: 'POST', body: JSON.stringify(data) }),
- getInstance: (id: number) => request<{ instance: TunnelInstance; status: string; uptime: number; error?: string; telemetry: Telemetry }>(`/instances/${id}`),
+ getInstance: (id: number) => request<{ instance: TunnelInstance; status: string; uptime: number; error?: string; telemetry: Telemetry; recovery?: RecoveryState }>(`/instances/${id}`),
  updateInstance: (id: number, data: unknown) => request<TunnelInstance>(`/instances/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
  deleteInstance: (id: number) => request<{ ok: boolean }>(`/instances/${id}`, { method: 'DELETE' }),
  instanceStart: (id: number) => request<{ status: string }>(`/instances/${id}/start`, { method: 'POST' }),
  instanceStop: (id: number) => request<{ status: string }>(`/instances/${id}/stop`, { method: 'POST' }),
  instanceRestart: (id: number) => request<{ status: string }>(`/instances/${id}/restart`, { method: 'POST' }),
- instanceStatus: (id: number) => request<{ status: string; uptime: number; error?: string; telemetry: Telemetry }>(`/instances/${id}/status`),
+ instanceStatus: (id: number) => request<{ status: string; uptime: number; error?: string; telemetry: Telemetry; recovery?: RecoveryState }>(`/instances/${id}/status`),
  listForwards: (id: number) => request<ForwardStatus[]>(`/instances/${id}/forwards`),
  createForward: (id: number, data: { name: string; protocol: string; listen_port: number; target_port: number; enabled: boolean }) => request<ForwardStatus['rule']>(`/instances/${id}/forwards`, { method: 'POST', body: JSON.stringify(data) }),
  deleteForward: (id: number, ruleId: number) => request<{ ok: boolean }>(`/instances/${id}/forwards/${ruleId}`, { method: 'DELETE' }),

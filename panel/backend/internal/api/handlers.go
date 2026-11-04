@@ -15,6 +15,7 @@ import (
 	"github.com/ParsaKSH/spoof-tunnel/internal/tester"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/auth"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/manager"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
@@ -101,14 +102,15 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	s.db.Find(&instances)
 
 	type instanceInfo struct {
-		Engine    string   `json:"engine"`
-		Telemetry l3.Stats `json:"telemetry"`
-		ID        uint     `json:"id"`
-		Name      string   `json:"name"`
-		Mode      string   `json:"mode"`
-		Status    string   `json:"status"`
-		Uptime    float64  `json:"uptime"`
-		Error     string   `json:"error,omitempty"`
+		Recovery  manager.RecoveryState `json:"recovery"`
+		Engine    string                `json:"engine"`
+		Telemetry l3.Stats              `json:"telemetry"`
+		ID        uint                  `json:"id"`
+		Name      string                `json:"name"`
+		Mode      string                `json:"mode"`
+		Status    string                `json:"status"`
+		Uptime    float64               `json:"uptime"`
+		Error     string                `json:"error,omitempty"`
 	}
 
 	var items []instanceInfo
@@ -118,6 +120,7 @@ func (s *Server) handleDashboard(c *gin.Context) {
 		status, errMsg := s.manager.InstanceStatus(inst.ID)
 		uptime := s.manager.InstanceUptime(inst.ID)
 		items = append(items, instanceInfo{
+			Recovery:  s.manager.RecoveryStatus(inst.ID),
 			Engine:    inst.Engine,
 			Telemetry: s.manager.Telemetry(inst.ID),
 			ID:        inst.ID,
@@ -172,9 +175,10 @@ func (s *Server) handleListInstances(c *gin.Context) {
 
 	type instanceWithStatus struct {
 		db.TunnelInstance
-		Status string  `json:"status"`
-		Uptime float64 `json:"uptime"`
-		Error  string  `json:"status_error,omitempty"`
+		Recovery manager.RecoveryState `json:"recovery"`
+		Status   string                `json:"status"`
+		Uptime   float64               `json:"uptime"`
+		Error    string                `json:"status_error,omitempty"`
 	}
 
 	var result []instanceWithStatus
@@ -182,6 +186,7 @@ func (s *Server) handleListInstances(c *gin.Context) {
 		status, errMsg := s.manager.InstanceStatus(inst.ID)
 		uptime := s.manager.InstanceUptime(inst.ID)
 		result = append(result, instanceWithStatus{
+			Recovery:       s.manager.RecoveryStatus(inst.ID),
 			TunnelInstance: inst,
 			Status:         string(status),
 			Uptime:         uptime.Seconds(),
@@ -273,6 +278,7 @@ func (s *Server) handleGetInstance(c *gin.Context) {
 		"status":    string(status),
 		"uptime":    uptime.Seconds(),
 		"telemetry": s.manager.Telemetry(id),
+		"recovery":  s.manager.RecoveryStatus(id),
 		"error":     errMsg,
 	})
 }
@@ -397,6 +403,7 @@ func (s *Server) handleInstanceStatus(c *gin.Context) {
 		"error":     errMsg,
 		"uptime":    s.manager.InstanceUptime(id).Seconds(),
 		"telemetry": s.manager.Telemetry(id),
+		"recovery":  s.manager.RecoveryStatus(id),
 	})
 }
 
@@ -661,7 +668,7 @@ func (s *Server) handleTesterStatus(c *gin.Context) {
 			state.Results = results
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"status": state.Status, "mode": state.Mode, "error": state.Error, "progress": state.Progress, "total_ips": state.TotalIPs, "processed_ips": state.ProcessedIPs, "sent_packets": state.SentPackets, "failed_packets": state.FailedPackets, "passed_count": state.PassedCount, "recv_count": state.RecvCount, "results": state.Results, "preview_limit": 200, "test_id": state.TestID})
+	c.JSON(http.StatusOK, gin.H{"status": state.Status, "mode": state.Mode, "error": state.Error, "progress": state.Progress, "total_ips": state.TotalIPs, "processed_ips": state.ProcessedIPs, "sent_packets": state.SentPackets, "failed_packets": state.FailedPackets, "passed_count": state.PassedCount, "recv_count": state.RecvCount, "results": state.Results, "preview_limit": 200, "test_id": state.TestID, "rejected_probes": state.RejectedProbes, "duplicate_probes": state.DuplicateProbes})
 }
 
 func (s *Server) handleTesterStop(c *gin.Context) {

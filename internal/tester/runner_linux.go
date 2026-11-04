@@ -91,7 +91,13 @@ func (r *Runner) doSend(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan stru
 	return nil
 }
 
-func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan struct{}) error {
+func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan struct{}, ready chan<- error) (err error) {
+	announced := false
+	defer func() {
+		if !announced {
+			ready <- err
+		}
+	}()
 	var proto int
 	switch cfg.Protocol {
 	case "tcp":
@@ -112,6 +118,12 @@ func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan s
 	if err := syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv); err != nil {
 		return fmt.Errorf("setsockopt SO_RCVTIMEO: %w", err)
 	}
+
+	// Best effort buffering for bursty diagnostic traffic. Start acknowledges
+	// readiness only after the raw socket and receive timeout are configured.
+	_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4*1024*1024)
+	announced = true
+	ready <- nil
 
 	timeout := cfg.Timeout
 	if timeout < 1 {
@@ -189,16 +201,36 @@ func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan s
 			}
 		}
 
-		offset := ihl + 8
-		if proto == syscall.IPPROTO_TCP {
-			header := int(buf[ihl+12]>>4) * 4
-			if header < 20 || ihl+header > n {
-				continue
+		length := int(binary.BigEndian.Uint16(buf[2:4]))
+		valid := length >= ihl && length <= n && internetChecksum(buf[:ihl]) == 0
+		if valid {
+			n = length
+			if proto == syscall.IPPROTO_ICMP {
+				valid = n >= ihl+8 && internetChecksum(buf[ihl:n]) == 0
+			} else {
+				valid = n >= ihl+20 && tcpChecksum(net.IP(buf[12:16]), net.IP(buf[16:20]), buf[ihl:n]) == 0
 			}
-			offset = ihl + header
 		}
-		sequence, probeErr := probeSequence(buf[offset:n], cfg.TestID, net.IP(buf[12:16]), packetCount)
+		if !valid {
+			r.recvMu.Lock()
+			r.recvRejected++
+			r.recvMu.Unlock()
+			continue
+		}
+		// Count rejected candidate echo/SYN packets from the configured source
+		// pool and destination port; this includes unrelated traffic, so a
+		// rejection alone is not proof of an incorrect test code.
+		var sequence uint32
+		var probeErr error
+		if proto == syscall.IPPROTO_TCP {
+			sequence, probeErr = tcpProbeSequence(buf[:n], ihl, cfg.TestID, packetCount)
+		} else {
+			sequence, probeErr = probeSequence(buf[ihl+8:n], cfg.TestID, net.IP(buf[12:16]), packetCount)
+		}
 		if probeErr != nil {
+			r.recvMu.Lock()
+			r.recvRejected++
+			r.recvMu.Unlock()
 			continue
 		}
 		bits := seen[srcIPu32]
@@ -208,6 +240,9 @@ func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan s
 		}
 		mask := uint64(1) << (sequence % 64)
 		if bits[sequence/64]&mask != 0 {
+			r.recvMu.Lock()
+			r.recvDuplicates++
+			r.recvMu.Unlock()
 			continue
 		}
 		bits[sequence/64] |= mask

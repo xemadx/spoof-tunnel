@@ -1,7 +1,8 @@
 "use client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { api } from "@/lib/api";
+import { api, type RecoveryState } from "@/lib/api";
+import { RecoveryNotice } from "@/lib/recovery";
 import { getBasePath } from "@/lib/basepath";
 import { useToast } from "@/lib/toast";
 import { IconPlay, IconStop, IconRestart, IconDownload } from "@/lib/icons";
@@ -56,6 +57,7 @@ function EditContent() {
 
   const [config, setConfig] = useState<Instance | null>(null);
   const [status, setStatus] = useState("stopped");
+  const [recovery, setRecovery] = useState<RecoveryState>();
   const [statusError, setStatusError] = useState("");
   const [controlBusy, setControlBusy] = useState(false);
  const requestId = useRef(0);
@@ -81,7 +83,7 @@ function EditContent() {
     if (!id || (fetching.current && !force)) return;
     const ticket = ++requestId.current; fetching.current = true;
     try {
-      let data: { status: string; error?: string };
+      let data: { status: string; error?: string; recovery?: RecoveryState };
       if (full) {
         const snapshot = await api.getInstance(id);
         if (ticket !== requestId.current) return;
@@ -91,7 +93,7 @@ function EditContent() {
         data = await api.instanceStatus(id);
         if (ticket !== requestId.current) return;
       }
-      setStatus(data.status); setStatusError(data.error || "");
+      setRecovery(data.recovery); setStatus(data.status); setStatusError(data.error || "");
     } catch (e) {
       if (ticket === requestId.current) setError(e instanceof Error ? e.message : "دریافت وضعیت اتصال ناموفق بود.");
     } finally { if (ticket === requestId.current) fetching.current = false; }
@@ -316,6 +318,7 @@ function EditContent() {
       </div>
 
       {statusError && <div role="alert" className="banner error">{statusError}</div>}
+      <RecoveryNotice state={recovery} />
       {error && <div role="alert" className="banner error">{error}</div>}
       {notice && <div role="status" className="banner ok">{notice}</div>}
 

@@ -45,9 +45,10 @@ import (
 
 // Forwarder is one TCP listen -> target pipe.
 type Forwarder struct {
-	BindInterface string // Set before Start; confines target dials to this TUN.
-	ListenAddr    string // e.g. "0.0.0.0:443"
-	TargetAddr    string // e.g. "10.77.0.2:443" (peer TUN IP + inbound port)
+	ReadyTimeout  time.Duration // Set before Start; zero means five seconds.
+	BindInterface string        // Set before Start; confines target dials to this TUN.
+	ListenAddr    string        // e.g. "0.0.0.0:443"
+	TargetAddr    string        // e.g. "10.77.0.2:443" (peer TUN IP + inbound port)
 
 	lifecycle sync.Mutex
 	cancel    context.CancelFunc
@@ -204,6 +205,18 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	defer func() { _ = client.Close(); f.mu.Lock(); delete(f.conns, client); f.mu.Unlock() }()
 	dialer := net.Dialer{Timeout: 10 * time.Second}
 	if f.BindInterface != "" {
+		timeout := f.ReadyTimeout
+		if timeout <= 0 {
+			timeout = 5 * time.Second
+		}
+		if err := waitTunnelReady(ctx, f.BindInterface, timeout); err != nil {
+			if ctx.Err() == nil {
+				f.mu.Lock()
+				f.lastErr = err.Error()
+				f.mu.Unlock()
+			}
+			return
+		}
 		dialer.Control = func(network, address string, raw syscall.RawConn) error {
 			return bindTunnelSocket(f.BindInterface, raw)
 		}
@@ -242,4 +255,23 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	go copyOne(client, target, &f.bytesDown)
 	<-copied
 	<-copied
+}
+
+// Wait only for the configured device; never fall back to another route.
+func waitTunnelReady(ctx context.Context, name string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		iface, err := net.InterfaceByName(name)
+		if err == nil && iface.Flags&net.FlagUp != 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("TUN %s not ready: %w", name, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }

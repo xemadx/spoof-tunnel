@@ -27,13 +27,13 @@ func TestSenderDeliversEveryListedIP(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer receiver.Stop()
-			time.Sleep(100 * time.Millisecond)
+			// RunReceiver must acknowledge the socket before an immediate send.
 			if err := sender.RunSender(cfg, ranges); err != nil {
 				t.Fatal(err)
 			}
 			defer sender.Stop()
 			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) && (sender.State().Status == "running" || receiver.State().RecvCount < 6) {
+			for time.Now().Before(deadline) && (sender.State().Status == "running" || receiver.State().PassedCount < 6) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			state := sender.State()
@@ -110,10 +110,20 @@ func TestReceiverRejectsDuplicatesAndUnrelatedTraffic(t *testing.T) {
 					send(BuildICMPEcho(src, dst, 777, 42))
 				}
 			}
+			malformed := buildProbe(cfg, src, dst, 1)
+			malformed[len(malformed)-1] ^= 1 // invalid transport checksum
+			send(malformed)
+			mismatch := cfg
+			mismatch.PacketCount = 11
+			send(buildProbe(mismatch, src, dst, 1))
 			time.Sleep(100 * time.Millisecond)
 			results := receiver.LiveResults()
 			if len(results) != 1 || results[0].Received != 1 || results[0].Passed {
 				t.Fatalf("false positive: %+v", results)
+			}
+			state := receiver.State()
+			if state.DuplicateProbes != 9 || state.RejectedProbes < 12 {
+				t.Fatalf("missing rejection counters: %+v", state)
 			}
 			for i := uint32(1); i < 10; i++ {
 				send(buildProbe(cfg, src, dst, i))
@@ -127,6 +137,40 @@ func TestReceiverRejectsDuplicatesAndUnrelatedTraffic(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			t.Fatalf("valid unique probes missing: %+v", results)
+		})
+	}
+}
+
+func TestReceiverDeliversMaximumPacketCount(t *testing.T) {
+	if os.Getenv("SPOOF_TESTER_ISOLATED") != "1" {
+		t.Skip("requires isolated namespace")
+	}
+	for _, protocol := range []string{"icmp", "tcp"} {
+		t.Run(protocol, func(t *testing.T) {
+			ranges, _ := ParseIPRangesFromString("198.18.1.99")
+			cfg := TesterConfig{TestID: "0123456789abcdef0123456789abcdef", Protocol: protocol, DstIP: "127.0.0.1", DstPort: 19119, Timeout: 10, PacketCount: 1000, MaxPacketLoss: 0}
+			receiver, sender := NewRunner(), NewRunner()
+			receiver.SetTmpDir(t.TempDir())
+			if err := receiver.RunReceiver(cfg, ranges); err != nil {
+				t.Fatal(err)
+			}
+			defer receiver.Stop()
+			if err := sender.RunSender(cfg, ranges); err != nil {
+				t.Fatal(err)
+			}
+			defer sender.Stop()
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if sender.State().Status == "done" && receiver.State().PassedCount == 1 {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			results := receiver.LiveResults()
+			state := sender.State()
+			if state.Status != "done" || state.SentPackets != 1000 || len(results) != 1 || results[0].Received != 1000 || !results[0].Passed {
+				t.Fatalf("max count delivery: sender=%+v receiver=%+v", state, results)
+			}
 		})
 	}
 }

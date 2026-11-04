@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "@/lib/link";
-import { api } from "@/lib/api";
+import { api, type RecoveryState } from "@/lib/api";
+import { RecoveryNotice } from "@/lib/recovery";
 import { useBasePath } from "@/lib/basepath";
 import { useToast } from "@/lib/toast";
 import { IconRestart, IconPlay, IconStop, IconSettings, IconTunnels } from "@/lib/icons";
@@ -19,6 +20,7 @@ type Telemetry = {
 };
 
 type Instance = {
+ recovery?: RecoveryState;
   id: number;
   name: string;
   mode: string;
@@ -232,6 +234,7 @@ export default function Dashboard() {
             </div>
           </div>
 
+          <RecoveryNotice state={primary?.recovery} />
           {!!primaryTelemetry?.clock_skew_seconds && <div role="alert" className="banner error">زمان فریم احرازشدهٔ طرف مقابل خارج از بازه است (اختلاف تقریبی {fa(Math.round(primaryTelemetry.clock_skew_seconds))} ثانیه). همگامی ساعت دو سرور و تأخیر مسیر را بررسی کن.</div>}
           <p className="hint">فیلتر مبدأ: {fa(primaryTelemetry?.source_rejected ?? 0)} · رد فرمت: {fa(primaryTelemetry?.invalid_packets ?? 0)} · رد MTU: {fa(primaryTelemetry?.mtu_rejected ?? 0)} · رد زمان: {fa(primaryTelemetry?.clock_rejected ?? 0)}</p>
           <p className="hint">آخرین مبدأ ردشده: {primaryTelemetry?.last_rejected_source || "—"}. شمارندهٔ فیلتر مبدأ شامل ترافیک نامرتبط اتصال‌های دیگر هم می‌شود؛ معادل افت مسیر نیست.</p>
@@ -347,6 +350,7 @@ export default function Dashboard() {
                       <td>
                         <span className={`pill ${i.status}`}>{STATUS_LABEL[i.status] || i.status}</span>
                         {i.error && <div className="inline-error" title={i.error}>{i.error}</div>}
+                        <RecoveryNotice state={i.recovery} />
                       </td>
                       <td>
                         {i.engine !== "tun" ? (

@@ -1,6 +1,7 @@
 package forward
 
 import (
+	"context"
 	"io"
 	"net"
 	"runtime"
@@ -98,6 +99,7 @@ func TestMissingTunnelCannotFallBackToOtherRoutes(t *testing.T) {
 	defer target.Close()
 	f := New("127.0.0.1:0", target.Addr().String())
 	f.BindInterface = "sp-missing-dev"
+	f.ReadyTimeout = 50 * time.Millisecond
 	if err := f.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -115,4 +117,41 @@ func TestMissingTunnelCannotFallBackToOtherRoutes(t *testing.T) {
 	if f.Stats().LastError == "" {
 		t.Fatal("missing failed-dial diagnostic")
 	}
+}
+
+func TestStopCancelsTunnelReadinessWait(t *testing.T) {
+	f := New("127.0.0.1:0", "127.0.0.1:1")
+	f.BindInterface = "sp-missing-dev"
+	if err := f.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Stop()
+	c, err := net.Dial("tcp", f.BoundAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	time.Sleep(50 * time.Millisecond)
+	done := make(chan struct{})
+	go func() { f.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop blocked on readiness wait")
+	}
+}
+func TestReadinessRecognizesAnUpInterface(t *testing.T) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp != 0 {
+			if err := waitTunnelReady(context.Background(), iface.Name, time.Second); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Skip("no up interface")
 }

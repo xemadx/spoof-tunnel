@@ -22,6 +22,8 @@ type TesterResult = {
 
 type TesterState = {
  test_id?: string;
+ rejected_probes?: number;
+ duplicate_probes?: number;
   status: string;
   mode: string;
   error?: string;
@@ -431,6 +433,11 @@ const next = await api.testerStatus();
               <p className="hint">ارسال در فرستنده، دریافت در مقصد را ثابت نمی‌کند؛ نتیجهٔ عبور هر IP را در گیرنده بررسی کن.</p>
             </div>
           )}
+
+          {state.mode === "receiver" && <div className="stack" aria-label="شمارنده‌های اعتبارسنجی گیرنده">
+            <p>پروب‌های ردشده: <strong className="mono">{(state.rejected_probes ?? 0).toLocaleString("fa-IR")}</strong> · بسته‌های تکراری: <strong className="mono">{(state.duplicate_probes ?? 0).toLocaleString("fa-IR")}</strong></p>
+            {!!state.rejected_probes && <p className="hint">بسته‌هایی از مبدأهای انتخاب‌شده با آزمون تطبیق نداشتند. کد، تعداد بسته، پروتکل و نسخهٔ دو پنل را بررسی کن؛ ترافیک نامرتبط یا خراب هم می‌تواند این شمارنده را افزایش دهد.</p>}
+          </div>}
 
           {(results.length > 0 || state.recv_count > 0) && (
             <div className="stack">

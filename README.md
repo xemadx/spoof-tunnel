@@ -4,11 +4,11 @@
 
 **Authenticated IPv4 TUN links. A Persian panel for every connection.**
 
-[![Release](https://img.shields.io/github/v/release/emad1381/spoof-tunnel)](https://github.com/emad1381/spoof-tunnel/releases/latest)
-[![Validation](https://github.com/emad1381/spoof-tunnel/actions/workflows/panel-test.yml/badge.svg)](https://github.com/emad1381/spoof-tunnel/actions/workflows/panel-test.yml)
+[![Release](https://img.shields.io/github/v/release/xemadx/spoof-tunnel)](https://github.com/xemadx/spoof-tunnel/releases/latest)
+[![Validation](https://github.com/xemadx/spoof-tunnel/actions/workflows/panel-test.yml/badge.svg)](https://github.com/xemadx/spoof-tunnel/actions/workflows/panel-test.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**English** · [فارسی](README-fa.md) · [Releases](https://github.com/emad1381/spoof-tunnel/releases) · [Operations](docs/OPERATIONS.md) · [Testing](docs/TESTING.md)
+**English** · [فارسی](README-fa.md) · [Releases](https://github.com/xemadx/spoof-tunnel/releases) · [Operations](docs/OPERATIONS.md) · [Testing](docs/TESTING.md)
 
 </div>
 
@@ -36,7 +36,7 @@ The current TUN engine and panel are Go binaries; they require no Rust or eBPF i
 Run as **root on each server**. Supported targets: Linux **amd64** and **arm64**, with systemd, iproute2, `/dev/net/tun`, `curl`, `tar` and `sha256sum`.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/main/install.sh | bash
 ```
 
 The same command updates an existing installation to the **latest published Release**. It downloads the matching architecture, checks published checksums, installs the binary pair and restarts `spoof-panel`. Pushing source alone does not update this download; a Release with built assets must exist.
@@ -46,10 +46,10 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.3.7**:
+To explicitly install **v0.3.8**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.7/install.sh | SPOOF_RELEASE=v0.3.7 bash
+curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.3.8/install.sh | SPOOF_RELEASE=v0.3.8 bash
 ```
 
 Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS`. No Go, Node.js or Rust toolchain is needed on the VPS.
@@ -137,13 +137,13 @@ Rotating local spoof sources require the **same list in the other end's allowed-
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.3.7 bash scripts/build.sh
+SPOOF_VERSION=v0.3.8 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
 The build exports the frontend, embeds it in `spoof-panel`, builds `spoof-l3` and packages both with the installer and documentation. GitHub Actions validates the source before creating release packages for both architectures.
 
-Validation includes **25 ordered carrier combinations**, **five rotating-source cases**, delayed heartbeats above three seconds RTT, and **one Iran + three simultaneous foreign peers on all five carriers** with concurrent TCP/UDP probes and isolated stop/restart. **17 browser scenarios** cover panel behavior and locally served Persian fonts; Go race tests and real HTTP/SQLite tests cover the backend. Reproduce them with [Testing](docs/TESTING.md). See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md) and the [fix report](docs/FIXES-2026-11-01.md).
+Validation includes **25 ordered carrier combinations**, **five rotating-source cases**, delayed heartbeats above three seconds RTT, and **one Iran + three simultaneous foreign peers on all five carriers** with concurrent TCP/UDP probes and isolated stop/restart. **19 browser scenarios** cover panel behavior and locally served Persian fonts; Go race tests and real HTTP/SQLite tests cover the backend. Reproduce them with [Testing](docs/TESTING.md). See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md) and the [fix report](docs/FIXES-2026-11-01.md).
 
 ## Limits and attribution
 
@@ -155,10 +155,17 @@ Derived from [ParsaKSH/spoof-tunnel](https://github.com/ParsaKSH/spoof-tunnel), 
 
 Password recovery during an update: choose **2** in the installer to generate and display a new password; **1** keeps the current password. The prompt reads `/dev/tty` even with `curl | bash`. For unattended explicit resets, pipe the installer into `SPOOF_PASSWORD_ACTION=reset bash`. Fresh-install and reset credentials appear at the end of successful installation. Plaintext passwords are not written to disk.
 
-### v0.3.7 reliability and diagnostics
+### v0.3.8 reliability and diagnostics
 
-Unexpected tunnel exits trigger cancellable recovery with exponential backoff from 1 to 30 seconds. Explicit Stop and deletion cancel pending recovery; the boot auto-start setting remains independent. TCP forward target sockets are bound to their TUN device, preventing fallback to another route during startup or failure.
+Unexpected tunnel exits trigger at most eight automatic recovery attempts with exponential backoff from 1 to 30 seconds. Thirty seconds of stable execution resets the failure streak; manual Start/Restart resets the budget. The panel shows pending recovery and budget exhaustion. Explicit Stop and deletion cancel pending recovery; the boot auto-start setting remains independent. TCP forward target sockets are bound to their TUN device, preventing fallback to another route during startup or failure.
 
-For spoof tests, update **both panels**. Start the receiver with an empty test code to generate a fresh code, copy the displayed 32-character code into the sender, then start sending. Probes include a per-run HMAC and source-bound sequence number; only unique authenticated sequences count. Older tester packets are intentionally rejected. Use a fresh code for every test.
+For spoof tests, update **both panels**. Start the receiver with an empty test code to generate a fresh code, copy the displayed 32-character code into the sender, then start sending. Probes include a per-run HMAC and source-bound sequence number; only unique authenticated sequences count. Tester packets from before v0.3.7 are intentionally rejected. Use a fresh code for every test.
 
 Authenticated out-of-window frames produce clock/delay diagnostics after authentication, without changing the system clock or widening the replay window. The dashboard separates source-filter, malformed-packet, MTU and timestamp rejections and shows the latest filtered source. Source-filter counts include unrelated links and are not path loss. Oversized IPv4 packets without DF are fragmented; DF packets elicit ICMP fragmentation-needed with the next-hop MTU. Incoming invalid packets are counted too.
+
+
+The receiver acknowledges startup only after its raw socket is ready. ICMP retains its 44-byte authenticated probe payload. TCP now uses a plain 40-byte IPv4/SYN with no payload or options, correlating each source/sequence/count with a 51-bit truncated HMAC in header fields. The new receiver also accepts v0.3.7 payload probes, but an old receiver cannot read the new TCP format: update both panels. Header-rewriting middleboxes can invalidate TCP correlation. These are diagnostic probes; the tunnel still uses AEAD. Rejected candidate packets and duplicate probes are counted separately, including when no source passes. A rejected packet does not by itself prove a wrong code; unrelated or corrupt traffic from the chosen pool can contribute.
+
+Forwarders wait up to five seconds for their assigned TUN to be up, and Stop cancels that wait. There is still no fallback route. Running tunnel edits are rejected with HTTP 409; saving a stopped/error tunnel cancels queued recovery and requires explicit Start. A mismatched PSK/allowlist normally leaves a live core without a working peer; restarting cannot repair it.
+
+The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.3.8` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
