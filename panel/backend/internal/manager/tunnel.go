@@ -32,23 +32,24 @@ const (
 
 // Instance represents a single running tunnel process
 type Instance struct {
-	wanted      bool
-	epoch       uint64
-	retryCancel chan struct{}
-	retryCount  int
-	recovering  bool
-	actionMu    sync.Mutex
-	ID          uint
-	cmd         *exec.Cmd
-	done        chan struct{}
-	telemetry   l3.Stats
-	status      TunnelStatus
-	error       string
-	mu          sync.Mutex
-	logLines    []string
-	logMu       sync.RWMutex
-	maxLogs     int
-	startTime   time.Time
+	processGeneration uint64
+	wanted            bool
+	epoch             uint64
+	retryCancel       chan struct{}
+	retryCount        int
+	recovering        bool
+	actionMu          sync.Mutex
+	ID                uint
+	cmd               *exec.Cmd
+	done              chan struct{}
+	telemetry         l3.Stats
+	status            TunnelStatus
+	error             string
+	mu                sync.Mutex
+	logLines          []string
+	logMu             sync.RWMutex
+	maxLogs           int
+	startTime         time.Time
 
 	// Log broadcasting to multiple WebSocket subscribers
 	subMu sync.Mutex
@@ -73,20 +74,22 @@ func newInstance(id uint) *Instance {
 
 // Manager manages multiple tunnel instances
 type Manager struct {
-	db         *gorm.DB
-	binaryPath string
-	configDir  string
-	instances  map[uint]*Instance
-	mu         sync.RWMutex
+	mutationGuard *sync.Mutex
+	db            *gorm.DB
+	binaryPath    string
+	configDir     string
+	instances     map[uint]*Instance
+	mu            sync.RWMutex
 }
 
 // NewManager creates a new multi-instance tunnel manager
 func NewManager(database *gorm.DB, binaryPath, configDir string) *Manager {
 	return &Manager{
-		db:         database,
-		binaryPath: binaryPath,
-		configDir:  configDir,
-		instances:  make(map[uint]*Instance),
+		mutationGuard: new(sync.Mutex),
+		db:            database,
+		binaryPath:    binaryPath,
+		configDir:     configDir,
+		instances:     make(map[uint]*Instance),
 	}
 }
 
@@ -180,6 +183,8 @@ func (m *Manager) startInstance(id uint) (err error) {
 	} else {
 		inst.cmd = exec.Command(m.binaryPath, "run", "--config", configPath)
 	}
+	inst.processGeneration++
+	generation := inst.processGeneration
 	inst.telemetry = l3.Stats{}
 	inst.cmd.Env = append(os.Environ(), "GODEBUG=madvdontneed=1")
 
@@ -216,8 +221,8 @@ func (m *Manager) startInstance(id uint) (err error) {
 		inst.logMu.Unlock()
 	}
 
-	go streamLogs(inst, stdout)
-	go streamLogs(inst, stderr)
+	go streamLogs(inst, stdout, generation)
+	go streamLogs(inst, stderr, generation)
 
 	cmd := inst.cmd
 	epoch := inst.epoch
@@ -532,7 +537,7 @@ func (m *Manager) generateConfig(cfg db.TunnelInstance) (string, error) {
 	return configPath, os.WriteFile(configPath, data, 0600)
 }
 
-func streamLogs(inst *Instance, reader io.Reader) {
+func streamLogs(inst *Instance, reader io.Reader, generation ...uint64) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
 
@@ -542,7 +547,9 @@ func streamLogs(inst *Instance, reader io.Reader) {
 			var stats l3.Stats
 			if json.Unmarshal([]byte(line[pos:]), &stats) == nil && (stats.Event == "spoof_stats" || stats.Event == "emad_stats") {
 				inst.mu.Lock()
-				inst.telemetry = stats
+				if len(generation) == 0 || inst.processGeneration == generation[0] {
+					inst.telemetry = stats
+				}
 				inst.mu.Unlock()
 			}
 		}
@@ -622,6 +629,12 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 			return
 		case <-timer.C:
 		}
+		m.mu.RLock()
+		guard := m.mutationGuard
+		m.mu.RUnlock()
+		if guard != nil {
+			guard.Lock()
+		}
 		inst.actionMu.Lock()
 		inst.mu.Lock()
 		valid := inst.wanted && inst.epoch == epoch && inst.cmd == nil
@@ -633,6 +646,9 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 			}
 			inst.mu.Unlock()
 			inst.actionMu.Unlock()
+			if guard != nil {
+				guard.Unlock()
+			}
 			return
 		}
 		err := m.startInstance(inst.ID)
@@ -648,9 +664,15 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 			inst.mu.Unlock()
 		}
 		inst.actionMu.Unlock()
+		if guard != nil {
+			guard.Unlock()
+		}
 		if err == nil {
 			return
 		}
 		log.Printf("[manager] instance %d recovery failed: %v", inst.ID, err)
 	}
 }
+
+// MutationGuard is the stable control-plane lock shared with API transactions.
+func (m *Manager) MutationGuard() *sync.Mutex { return m.mutationGuard }

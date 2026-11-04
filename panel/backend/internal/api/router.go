@@ -24,7 +24,7 @@ type Server struct {
 	router     *gin.Engine
 	webPath    string
 	version    string
-	mutationMu sync.Mutex
+	mutationMu *sync.Mutex
 	loginMu    sync.Mutex
 	logins     map[string][]time.Time
 }
@@ -48,13 +48,14 @@ func NewServer(database *gorm.DB, mgr *manager.Manager, webPath string, version 
 	})
 
 	s := &Server{
-		db:      database,
-		manager: mgr,
-		tester:  tester.NewRunner(),
-		router:  r,
-		webPath: webPath,
-		version: version,
-		logins:  make(map[string][]time.Time),
+		mutationMu: mgr.MutationGuard(),
+		db:         database,
+		manager:    mgr,
+		tester:     tester.NewRunner(),
+		router:     r,
+		webPath:    webPath,
+		version:    version,
+		logins:     make(map[string][]time.Time),
 	}
 
 	s.setupRoutes()
@@ -166,4 +167,4 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 }
 
 // Close joins the diagnostic worker before application shutdown.
-func (s *Server) Close() { s.tester.Stop() }
+func (s *Server) Close() { s.tester.Stop(); s.manager.StopAll() }

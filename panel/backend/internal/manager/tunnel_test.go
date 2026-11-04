@@ -154,6 +154,8 @@ func TestCrashRecoveryAndManualStopCancelsRetry(t *testing.T) {
 		t.Fatalf("restarted after manual stop: %s", status)
 	}
 
+	guard := manager.MutationGuard()
+	guard.Lock()
 	if err := os.Remove(filepath.Join(dir, "once")); err != nil {
 		t.Fatal(err)
 	}
@@ -171,9 +173,16 @@ func TestCrashRecoveryAndManualStopCancelsRetry(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+	time.Sleep(1200 * time.Millisecond)
+	if status, _ := manager.InstanceStatus(cfg.ID); status != StatusError {
+		guard.Unlock()
+		t.Fatal("recovery bypassed API mutation guard")
+	}
 	if err := manager.StopInstance(cfg.ID); err != nil {
+		guard.Unlock()
 		t.Fatal(err)
 	}
+	guard.Unlock()
 	time.Sleep(1500 * time.Millisecond)
 	if status, _ := manager.InstanceStatus(cfg.ID); status != StatusStopped {
 		t.Fatal("pending retry ignored manual Stop")
@@ -185,5 +194,15 @@ func TestTelemetryAcceptsReorderedJSON(t *testing.T) {
 	streamLogs(inst, strings.NewReader("prefix {\"source_rejected\":9,\"event\":\"spoof_stats\",\"clock_skew_seconds\":60,\"last_peer\":100}\n"))
 	if inst.telemetry.SourceRejected != 9 || inst.telemetry.ClockSkewSeconds != 60 {
 		t.Fatalf("lost diagnostics: %+v", inst.telemetry)
+	}
+}
+
+func TestOldProcessTelemetryCannotOverwriteRecoveredGeneration(t *testing.T) {
+	inst := newInstance(1)
+	inst.processGeneration = 2
+	streamLogs(inst, strings.NewReader("{\"event\":\"spoof_stats\",\"tx_bytes\":9}\n"), 2)
+	streamLogs(inst, strings.NewReader("{\"event\":\"spoof_stats\",\"tx_bytes\":100,\"last_peer\":9999999999}\n"), 1)
+	if inst.telemetry.TX != 9 || inst.telemetry.LastPeer != 0 {
+		t.Fatalf("old process overwrote new telemetry: %+v", inst.telemetry)
 	}
 }
