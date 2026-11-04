@@ -46,10 +46,10 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.3.8**:
+To explicitly install **v0.3.9**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.3.8/install.sh | SPOOF_RELEASE=v0.3.8 bash
+curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.3.9/install.sh | SPOOF_RELEASE=v0.3.9 bash
 ```
 
 Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS`. No Go, Node.js or Rust toolchain is needed on the VPS.
@@ -137,7 +137,7 @@ Rotating local spoof sources require the **same list in the other end's allowed-
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.3.8 bash scripts/build.sh
+SPOOF_VERSION=v0.3.9 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
@@ -155,7 +155,7 @@ Derived from [ParsaKSH/spoof-tunnel](https://github.com/ParsaKSH/spoof-tunnel), 
 
 Password recovery during an update: choose **2** in the installer to generate and display a new password; **1** keeps the current password. The prompt reads `/dev/tty` even with `curl | bash`. For unattended explicit resets, pipe the installer into `SPOOF_PASSWORD_ACTION=reset bash`. Fresh-install and reset credentials appear at the end of successful installation. Plaintext passwords are not written to disk.
 
-### v0.3.8 reliability and diagnostics
+### v0.3.9 reliability and diagnostics
 
 Unexpected tunnel exits trigger at most eight automatic recovery attempts with exponential backoff from 1 to 30 seconds. Thirty seconds of stable execution resets the failure streak; manual Start/Restart resets the budget. The panel shows pending recovery and budget exhaustion. Explicit Stop and deletion cancel pending recovery; the boot auto-start setting remains independent. TCP forward target sockets are bound to their TUN device, preventing fallback to another route during startup or failure.
 
@@ -168,4 +168,4 @@ The receiver acknowledges startup only after its raw socket is ready. ICMP retai
 
 Forwarders wait up to five seconds for their assigned TUN to be up, and Stop cancels that wait. There is still no fallback route. Running tunnel edits are rejected with HTTP 409; saving a stopped/error tunnel cancels queued recovery and requires explicit Start. A mismatched PSK/allowlist normally leaves a live core without a working peer; restarting cannot repair it.
 
-The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.3.8` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
+The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.3.9` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).

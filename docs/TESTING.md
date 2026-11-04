@@ -46,6 +46,6 @@ These checks establish reproducible behavior in the tested environments. They do
 npm's download cache is restored using the frontend lockfile. Go module and compiled-build caches include both module dependency files; validation and each release architecture have separate keys, with a commit suffix so successful runs save updated incremental caches. Release jobs download the exact static frontend artifact that passed validation instead of reinstalling Node dependencies and rebuilding the same UI twice. A missing frontend artifact fails packaging. Cache misses always rebuild normally; network integration tests run on every validation and are not cached.
 
 
-## v0.3.8 review regressions
+## v0.3.9 review regressions
 
 See [review assessment and probe compatibility](REVIEW-2026-11-04.md). `integration_tester.py` includes immediate startup, maximum 1000-packet ICMP/TCP delivery, rejected/duplicate accounting and canceled-send coverage in a loopback-only namespace. `integration_multipeer.py` also verifies that live edits return 409 without stopping the core and that recovery state is exported. `integration_forward.py` checks a real delayed TUN startup, cancellation and fail-closed routing in a private namespace. The browser suite now has 19 scenarios. Unprivileged Go tests check synchronous raw-socket permission errors; privileged namespace tests prove reception.

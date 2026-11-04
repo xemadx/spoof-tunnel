@@ -68,8 +68,15 @@ func TestTCPProxyPipesBytes(t *testing.T) {
 	if string(buf) != msg {
 		t.Fatalf("got %q, want %q", buf, msg)
 	}
-	if s := fwd.Stats(); !s.Listening || s.Connections < 1 || s.BytesUp == 0 || s.BytesDown == 0 {
-		t.Fatalf("unexpected stats: %+v", s)
+	if !fwd.Stats().Listening {
+		t.Fatal("forwarder stopped unexpectedly")
+	}
+	// A client may read bytes before the writer goroutine records its atomic
+	// counter. Join the workers before asserting the final, exact totals.
+	conn.Close()
+	fwd.Stop()
+	if s := fwd.Stats(); s.Listening || s.Connections != 1 || s.BytesUp != int64(len(msg)) || s.BytesDown != int64(len(msg)) {
+		t.Fatalf("unexpected final stats: %+v", s)
 	}
 }
 
