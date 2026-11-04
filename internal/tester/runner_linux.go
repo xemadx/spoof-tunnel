@@ -62,14 +62,7 @@ func (r *Runner) doSend(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan stru
 				return false
 			default:
 			}
-			var pkt []byte
-			seq := uint16((idx*packetCount + p) % 65536)
-			switch cfg.Protocol {
-			case "tcp":
-				pkt = BuildTCPSyn(srcIP, dstIP, cfg.DstPort)
-			case "icmp":
-				pkt = BuildICMPEcho(srcIP, dstIP, uint16(idx+1), seq)
-			}
+			pkt := buildProbe(cfg, srcIP, dstIP, uint32(p))
 
 			if err := syscall.Sendto(fd, pkt, 0, &addr); err != nil {
 				errCount++
@@ -133,6 +126,7 @@ func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan s
 	log.Printf("[tester-receiver] protocol=%s sources=%d packet_count=%d max_loss=%.1f%% timeout=%ds",
 		cfg.Protocol, ranges.Total(), packetCount, maxLoss, timeout)
 
+	seen := make(map[uint32][]uint64)
 	buf := make([]byte, 65535)
 	deadline := time.Now().Add(time.Duration(timeout) * time.Second)
 	startTime := time.Now()
@@ -195,6 +189,28 @@ func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan s
 			}
 		}
 
+		offset := ihl + 8
+		if proto == syscall.IPPROTO_TCP {
+			header := int(buf[ihl+12]>>4) * 4
+			if header < 20 || ihl+header > n {
+				continue
+			}
+			offset = ihl + header
+		}
+		sequence, probeErr := probeSequence(buf[offset:n], cfg.TestID, net.IP(buf[12:16]), packetCount)
+		if probeErr != nil {
+			continue
+		}
+		bits := seen[srcIPu32]
+		if bits == nil {
+			bits = make([]uint64, (packetCount+63)/64)
+			seen[srcIPu32] = bits
+		}
+		mask := uint64(1) << (sequence % 64)
+		if bits[sequence/64]&mask != 0 {
+			continue
+		}
+		bits[sequence/64] |= mask
 		r.recvMu.Lock()
 		before, exists := r.received[srcIPu32]
 		if !exists {

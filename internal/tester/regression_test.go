@@ -27,7 +27,7 @@ func TestRestartJoinsPreviousReceiver(t *testing.T) {
 	r := NewRunner()
 	r.SetTmpDir(t.TempDir())
 	ranges, _ := ParseIPRangesFromString("192.0.2.99")
-	cfg := TesterConfig{Mode: "receiver", Protocol: "icmp", Timeout: 10, PacketCount: 1}
+	cfg := TesterConfig{TestID: "0123456789abcdef0123456789abcdef", Mode: "receiver", Protocol: "icmp", Timeout: 10, PacketCount: 1}
 	if e := r.RunReceiver(cfg, ranges); e != nil {
 		t.Fatal(e)
 	}

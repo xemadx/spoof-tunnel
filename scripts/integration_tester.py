@@ -9,5 +9,5 @@ with tempfile.TemporaryDirectory(prefix='spoof-tester-') as temp:
  subprocess.run(['ip','netns','add',name],check=True)
  try:
   subprocess.run(['ip','-n',name,'link','set','lo','up'],check=True)
-  subprocess.run(['ip','netns','exec',name,'env','SPOOF_TESTER_ISOLATED=1',binary,'-test.run','TestSenderDeliversEveryListedIP|TestCancelledSenderDoesNotClaimCompletion','-test.v'],check=True,timeout=30)
+  subprocess.run(['ip','netns','exec',name,'env','SPOOF_TESTER_ISOLATED=1',binary,'-test.run','TestSenderDeliversEveryListedIP|TestCancelledSenderDoesNotClaimCompletion|TestReceiverRejectsDuplicatesAndUnrelatedTraffic','-test.v'],check=True,timeout=30)
  finally:subprocess.run(['ip','netns','del',name],check=True)

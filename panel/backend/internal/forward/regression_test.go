@@ -89,3 +89,30 @@ func TestRegressionImmediateStop(t *testing.T) {
 	}
 	f.Stop()
 }
+
+func TestMissingTunnelCannotFallBackToOtherRoutes(t *testing.T) {
+	target, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	f := New("127.0.0.1:0", target.Addr().String())
+	f.BindInterface = "sp-missing-dev"
+	if err := f.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer f.Stop()
+	client, err := net.Dial("tcp", f.BoundAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	target.SetDeadline(time.Now().Add(200 * time.Millisecond))
+	if c, err := target.Accept(); err == nil {
+		c.Close()
+		t.Fatal("forwarder escaped to a non-TUN route")
+	}
+	if f.Stats().LastError == "" {
+		t.Fatal("missing failed-dial diagnostic")
+	}
+}

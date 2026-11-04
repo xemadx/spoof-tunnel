@@ -21,6 +21,7 @@ type TesterResult = {
 };
 
 type TesterState = {
+ test_id?: string;
   status: string;
   mode: string;
   error?: string;
@@ -52,6 +53,7 @@ export default function TesterPage() {
   const [serverFilePath, setServerFilePath] = useState("");
   const [copied, setCopied] = useState(false);
   const [protocol, setProtocol] = useState("icmp");
+  const [testID,setTestID] = useState("");
   const [dstIP, setDstIP] = useState("");
   const [dstPort, setDstPort] = useState(80);
   const [timeout, setTimeout_] = useState(30);
@@ -97,12 +99,14 @@ export default function TesterPage() {
       setError("آدرس IP مقصد (سرور گیرنده) را وارد کن.");
       return;
     }
+    if (tab === "sender" && !/^[a-fA-F0-9]{32}$/.test(testID.trim())) {setError("کد ۳۲ کاراکتری آزمون را از گیرنده کپی کن.");return;}
     setError("");
     actionInFlight.current = true; ++requestId.current;
     setLoading(true);
     try {
       await api.testerStart({
         mode: tab,
+        test_id: testID.trim(),
         protocol,
         ip_list: inputType === "text" ? ipList : "",
         file_path: inputType === "file_path" ? serverFilePath : "",
@@ -210,6 +214,11 @@ const next = await api.testerStatus();
           <h2>{tab === "receiver" ? "تنظیمات گیرنده" : "تنظیمات فرستنده"}</h2>
 
           <div className="stack">
+            <label className="field">
+              <span>کد مشترک آزمون</span>
+              <input className="input mono" dir="ltr" aria-label="کد مشترک آزمون" value={testID} onChange={e=>setTestID(e.target.value.trim())} placeholder={tab==="receiver" ? "خالی بگذار تا کد جدید ساخته شود" : "کد ۳۲ کاراکتری گیرنده را وارد کن"} maxLength={32}/>
+              <small className="hint">ابتدا گیرنده را شروع کن، سپس کد آن را در فرستنده وارد کن. پروتکل و تعداد بستهٔ دو طرف یکسان باشد. هر آزمون تازه باید کد جدا داشته باشد؛ هر دو پنل را آپدیت کن.</small>
+            </label>
             <label className="field">
               <span>پروتکل آزمون</span>
               <select className="input" value={protocol} onChange={(e) => setProtocol(e.target.value)}>
@@ -411,6 +420,7 @@ const next = await api.testerStatus();
             </div>
           )}
 
+          {state.test_id && <div className="banner ok"><span>کد این آزمون: </span><code dir="ltr" style={{overflowWrap:"anywhere",userSelect:"all"}}>{state.test_id}</code><button type="button" className="btn btn-ghost btn-sm" onClick={async()=>{try{if(!navigator.clipboard)throw new Error("clipboard unavailable");await navigator.clipboard.writeText(state.test_id!);toast.success("کد آزمون کپی شد.");}catch{toast.error("کد را دستی کپی کن.");}}}>کپی کد آزمون</button></div>}
           {state.error && <div role="alert" className="banner error">{state.error}</div>}
 
           {state.mode === "sender" && (

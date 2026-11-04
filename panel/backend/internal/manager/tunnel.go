@@ -32,18 +32,23 @@ const (
 
 // Instance represents a single running tunnel process
 type Instance struct {
-	actionMu  sync.Mutex
-	ID        uint
-	cmd       *exec.Cmd
-	done      chan struct{}
-	telemetry l3.Stats
-	status    TunnelStatus
-	error     string
-	mu        sync.Mutex
-	logLines  []string
-	logMu     sync.RWMutex
-	maxLogs   int
-	startTime time.Time
+	wanted      bool
+	epoch       uint64
+	retryCancel chan struct{}
+	retryCount  int
+	recovering  bool
+	actionMu    sync.Mutex
+	ID          uint
+	cmd         *exec.Cmd
+	done        chan struct{}
+	telemetry   l3.Stats
+	status      TunnelStatus
+	error       string
+	mu          sync.Mutex
+	logLines    []string
+	logMu       sync.RWMutex
+	maxLogs     int
+	startTime   time.Time
 
 	// Log broadcasting to multiple WebSocket subscribers
 	subMu sync.Mutex
@@ -110,7 +115,17 @@ func (m *Manager) StartInstance(id uint) error {
 	inst := m.getInstance(id)
 	inst.actionMu.Lock()
 	defer inst.actionMu.Unlock()
+	inst.mu.Lock()
+	if inst.cmd != nil {
+		inst.mu.Unlock()
+		return fmt.Errorf("instance %d already running", id)
+	}
+	inst.newIntent(true)
+	inst.mu.Unlock()
 	if err := m.startInstance(id); err != nil {
+		inst.mu.Lock()
+		inst.wanted = false
+		inst.mu.Unlock()
 		return err
 	}
 	m.StartForwarders(id)
@@ -194,15 +209,18 @@ func (m *Manager) startInstance(id uint) (err error) {
 	inst.error = ""
 	inst.startTime = time.Now()
 
-	// Clear old logs
-	inst.logMu.Lock()
-	inst.logLines = make([]string, 0, 1000)
-	inst.logMu.Unlock()
+	// Preserve the crash context across automatic recovery; manual starts reset it.
+	if !inst.recovering {
+		inst.logMu.Lock()
+		inst.logLines = make([]string, 0, 1000)
+		inst.logMu.Unlock()
+	}
 
 	go streamLogs(inst, stdout)
 	go streamLogs(inst, stderr)
 
 	cmd := inst.cmd
+	epoch := inst.epoch
 	inst.done = make(chan struct{})
 	done := inst.done
 	go func() {
@@ -222,8 +240,15 @@ func (m *Manager) startInstance(id uint) (err error) {
 				inst.error = err.Error()
 			}
 		}
+		restart := inst.wanted && inst.epoch == epoch
+		if time.Since(inst.startTime) > 30*time.Second {
+			inst.retryCount = 0
+		}
 		close(done)
 		inst.mu.Unlock()
+		if restart {
+			go func() { inst.actionMu.Lock(); inst.actionMu.Unlock(); m.recoverInstance(inst, epoch) }()
+		}
 	}()
 
 	log.Printf("[manager] started instance %d (%s)", id, cfg.Name)
@@ -238,6 +263,9 @@ func (m *Manager) StopInstance(id uint) error {
 	inst := m.getInstance(id)
 	inst.actionMu.Lock()
 	defer inst.actionMu.Unlock()
+	inst.mu.Lock()
+	inst.newIntent(false)
+	inst.mu.Unlock()
 	return m.stopInstance(id)
 }
 
@@ -279,6 +307,9 @@ func (m *Manager) RestartInstance(id uint) error {
 	inst := m.getInstance(id)
 	inst.actionMu.Lock()
 	defer inst.actionMu.Unlock()
+	inst.mu.Lock()
+	inst.newIntent(true)
+	inst.mu.Unlock()
 	if err := m.stopInstance(id); err != nil {
 		return err
 	}
@@ -507,16 +538,9 @@ func streamLogs(inst *Instance, reader io.Reader) {
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		if pos := strings.Index(line, `{"event":"spoof_stats"`); pos >= 0 {
+		if pos := strings.Index(line, "{"); pos >= 0 {
 			var stats l3.Stats
-			if json.Unmarshal([]byte(line[pos:]), &stats) == nil {
-				inst.mu.Lock()
-				inst.telemetry = stats
-				inst.mu.Unlock()
-			}
-		} else if pos := strings.Index(line, `{"event":"emad_stats"`); pos >= 0 {
-			var stats l3.Stats
-			if json.Unmarshal([]byte(line[pos:]), &stats) == nil {
+			if json.Unmarshal([]byte(line[pos:]), &stats) == nil && (stats.Event == "spoof_stats" || stats.Event == "emad_stats") {
 				inst.mu.Lock()
 				inst.telemetry = stats
 				inst.mu.Unlock()
@@ -549,4 +573,84 @@ func (m *Manager) Telemetry(id uint) l3.Stats {
 	s := inst.telemetry
 	s.Peer = inst.status == StatusRunning && s.LastPeer > time.Now().Add(-15*time.Second).Unix()
 	return s
+}
+
+// Called with mu held. A new explicit action invalidates every queued recovery.
+func (inst *Instance) newIntent(wanted bool) {
+	if inst.retryCancel != nil {
+		close(inst.retryCancel)
+	}
+	inst.retryCancel = make(chan struct{})
+	inst.epoch++
+	inst.wanted = wanted
+	inst.retryCount = 0
+	inst.recovering = false
+}
+func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
+	inst.mu.Lock()
+	if !inst.wanted || inst.epoch != epoch || inst.recovering {
+		inst.mu.Unlock()
+		return
+	}
+	inst.recovering = true
+	cancel := inst.retryCancel
+	inst.mu.Unlock()
+
+	for {
+		inst.mu.Lock()
+		if !inst.wanted || inst.epoch != epoch {
+			inst.mu.Unlock()
+			return
+		}
+		attempt := inst.retryCount
+		number := attempt + 1
+		inst.retryCount++
+		inst.mu.Unlock()
+		if attempt > 5 {
+			attempt = 5
+		}
+		delay := time.Second * time.Duration(1<<attempt)
+		if delay > 30*time.Second {
+			delay = 30 * time.Second
+		}
+		log.Printf("[manager] instance %d recovery in %s", inst.ID, delay)
+		streamLogs(inst, strings.NewReader(fmt.Sprintf("[supervisor] automatic recovery in %s (attempt %d)\n", delay, number)))
+		timer := time.NewTimer(delay)
+		select {
+		case <-cancel:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		inst.actionMu.Lock()
+		inst.mu.Lock()
+		valid := inst.wanted && inst.epoch == epoch && inst.cmd == nil
+		inst.mu.Unlock()
+		if !valid {
+			inst.mu.Lock()
+			if inst.epoch == epoch {
+				inst.recovering = false
+			}
+			inst.mu.Unlock()
+			inst.actionMu.Unlock()
+			return
+		}
+		err := m.startInstance(inst.ID)
+		if err == nil {
+			m.StartForwarders(inst.ID)
+		}
+		// A fast new exit must be allowed to schedule its own recovery.
+		if err == nil {
+			inst.mu.Lock()
+			if inst.epoch == epoch {
+				inst.recovering = false
+			}
+			inst.mu.Unlock()
+		}
+		inst.actionMu.Unlock()
+		if err == nil {
+			return
+		}
+		log.Printf("[manager] instance %d recovery failed: %v", inst.ID, err)
+	}
 }

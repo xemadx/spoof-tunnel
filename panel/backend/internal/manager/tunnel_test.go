@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,5 +111,79 @@ func TestStartupFailureIsVisibleInStatus(t *testing.T) {
 	status, message := manager.InstanceStatus(invalid.ID)
 	if status != StatusError || message == "" {
 		t.Fatalf("failure was hidden: %s %q", status, message)
+	}
+}
+
+func TestCrashRecoveryAndManualStopCancelsRetry(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.InitDB(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d, _ := database.DB(); d.Close() }()
+	script := "#!/bin/sh\nif [ ! -f '" + filepath.Join(dir, "once") + "' ]; then touch '" + filepath.Join(dir, "once") + "'; exit 1; fi\ntrap 'exit 0' INT TERM\nwhile :; do sleep 1; done\n"
+	if err := os.WriteFile(filepath.Join(dir, "spoof-l3"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := db.TunnelInstance{Name: "recover", Engine: "tun", Mode: "local", LocalIP: "192.0.2.1", RemoteAddr: "192.0.2.2", SpoofIP: "198.51.100.1", PeerSpoofIP: "198.51.100.2", SendTransport: "icmp", RecvTransport: "icmp", RemotePort: 8090, RecvPort: 5001, TunInterface: "sprec", TunAddress: "10.77.0.1/30", TunPeer: "10.77.0.2", TunMTU: 1280, PSK: base64.StdEncoding.EncodeToString(make([]byte, 32))}
+	database.Create(&cfg)
+	manager := NewManager(database, "unused", dir)
+	defer manager.StopAll()
+	if err := manager.StartInstance(cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		inst := manager.getInstance(cfg.ID)
+		inst.mu.Lock()
+		ok := inst.retryCount > 0 && inst.cmd != nil
+		inst.mu.Unlock()
+		if ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("did not recover")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := manager.StopInstance(cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if status, _ := manager.InstanceStatus(cfg.ID); status != StatusStopped {
+		t.Fatalf("restarted after manual stop: %s", status)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "once")); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartInstance(cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(time.Second)
+	for {
+		status, _ := manager.InstanceStatus(cfg.ID)
+		if status == StatusError {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("test process did not crash")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := manager.StopInstance(cfg.ID); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(1500 * time.Millisecond)
+	if status, _ := manager.InstanceStatus(cfg.ID); status != StatusStopped {
+		t.Fatal("pending retry ignored manual Stop")
+	}
+}
+
+func TestTelemetryAcceptsReorderedJSON(t *testing.T) {
+	inst := newInstance(1)
+	streamLogs(inst, strings.NewReader("prefix {\"source_rejected\":9,\"event\":\"spoof_stats\",\"clock_skew_seconds\":60,\"last_peer\":100}\n"))
+	if inst.telemetry.SourceRejected != 9 || inst.telemetry.ClockSkewSeconds != 60 {
+		t.Fatalf("lost diagnostics: %+v", inst.telemetry)
 	}
 }

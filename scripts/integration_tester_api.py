@@ -17,10 +17,20 @@ for _ in range(60):
  except OSError:time.sleep(.1)
 else:raise AssertionError('server did not start')
 token=api('/auth/login',{'username':'tester-api','password':'isolated-test-password'})['token']
+previous=''
+for _ in range(2):
+ api('/tester/start',{'mode':'receiver','protocol':'icmp','timeout':10,'packet_count':10,'max_packet_loss':0,'ip_list':'10.0.0.2'})
+ state=api('/tester/status');code=state['test_id'];assert len(code)==32 and code!=previous,state;previous=code
+ api('/tester/stop',{})
+try:
+ api('/tester/start',{'mode':'sender','protocol':'icmp','dst_ip':'127.0.0.1','timeout':10,'packet_count':1,'max_packet_loss':0,'ip_list':'10.0.0.2'})
+ raise AssertionError('sender accepted a missing test code')
+except urllib.error.HTTPError as error:assert error.code==400,error.code
+print('PASS fresh receiver codes and missing-code validation through real HTTP',flush=True)
 for protocol in ['icmp','tcp']:
  for count in [6,1000]:
   sources='\n'.join('10.0.%d.%d'%(i//128,(i%128)*2) for i in range(count))
-  result=api('/tester/start',{'mode':'sender','protocol':protocol,'dst_ip':'127.0.0.1','dst_port':19119,'timeout':10,'packet_count':10,'max_packet_loss':0,'ip_list':sources})
+  result=api('/tester/start',{'test_id':'0123456789abcdef0123456789abcdef','mode':'sender','protocol':protocol,'dst_ip':'127.0.0.1','dst_port':19119,'timeout':10,'packet_count':10,'max_packet_loss':0,'ip_list':sources})
   assert result['ip_count']==count,result
   for _ in range(200):
    state=api('/tester/status')

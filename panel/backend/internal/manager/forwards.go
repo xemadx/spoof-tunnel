@@ -75,6 +75,7 @@ func startForwarder(ins *Instance, inst db.TunnelInstance, rule db.ForwardRule) 
 		old.Stop()
 	}
 	fwd := forward.New(fmt.Sprintf("0.0.0.0:%d", rule.ListenPort), targetAddr(inst, rule))
+	fwd.BindInterface = inst.TunInterface
 	ins.forwarders[rule.ID] = fwd
 	return fwd.Start()
 }

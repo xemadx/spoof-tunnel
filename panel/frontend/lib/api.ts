@@ -1,12 +1,12 @@
 import { getBasePath } from './basepath';
-export type Telemetry = { peer_connected: boolean; tx_bytes: number; rx_bytes: number; tx_packets: number; rx_packets: number; drops: number; last_peer: number; rtt_ms?: number };
+export type Telemetry = { peer_connected: boolean; source_rejected?: number; last_rejected_source?: string; invalid_packets?: number; mtu_rejected?: number; clock_rejected?: number; clock_skew_seconds?: number; tx_bytes: number; rx_bytes: number; tx_packets: number; rx_packets: number; drops: number; last_peer: number; rtt_ms?: number };
 export type TunnelInstance = {
  id: number; name: string; mode: string; engine: string; enabled: boolean; status: string; uptime: number; error?: string; status_error?: string;
  send_transport: string; recv_transport: string; remote_addr: string; client_ip: string; local_ip: string; tun_interface: string; tun_address: string; tun_peer: string; tun_mtu: number;
  spoof_ip: string; peer_spoof_ip: string; spoof_ip_list: string; peer_spoof_ip_list: string; remote_port: number; recv_port: number; listen_port: number; client_port: number; psk: string; updated_at?: string;
 };
 export type TesterResult = { ip: string; received: number; sent: number; loss_pct: number; passed: boolean };
-export type TesterState = { status: string; mode: string; error?: string; progress: number; total_ips: number; passed_count: number; recv_count: number; results: TesterResult[]; preview_limit?: number };
+export type TesterState = { test_id?: string; status: string; mode: string; error?: string; progress: number; total_ips: number; passed_count: number; recv_count: number; results: TesterResult[]; preview_limit?: number };
 type ForwardStatus = { rule: { id: number; name: string; protocol: string; listen_port: number; target_port: number; enabled: boolean }; target: string; listening: boolean; stats: { listening: boolean; connections: number; bytes_up: number; bytes_down: number; last_error: string } };
 type System = { hostname: string; os: string; arch: string; cpus: number; memory_mb: number; go_version: string; panel_version: string };
 type Dashboard = { total: number; running_count: number; stopped_count: number; error_count: number; instances: (TunnelInstance & { telemetry: Telemetry })[] | null };

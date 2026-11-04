@@ -7,6 +7,7 @@ import { useToast } from "@/lib/toast";
 import { IconRestart, IconPlay, IconStop, IconSettings, IconTunnels } from "@/lib/icons";
 
 type Telemetry = {
+ source_rejected?: number; last_rejected_source?: string; invalid_packets?: number; mtu_rejected?: number; clock_rejected?: number; clock_skew_seconds?: number;
   peer_connected: boolean;
   tx_bytes: number;
   rx_bytes: number;
@@ -231,6 +232,9 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {!!primaryTelemetry?.clock_skew_seconds && <div role="alert" className="banner error">زمان فریم احرازشدهٔ طرف مقابل خارج از بازه است (اختلاف تقریبی {fa(Math.round(primaryTelemetry.clock_skew_seconds))} ثانیه). همگامی ساعت دو سرور و تأخیر مسیر را بررسی کن.</div>}
+          <p className="hint">فیلتر مبدأ: {fa(primaryTelemetry?.source_rejected ?? 0)} · رد فرمت: {fa(primaryTelemetry?.invalid_packets ?? 0)} · رد MTU: {fa(primaryTelemetry?.mtu_rejected ?? 0)} · رد زمان: {fa(primaryTelemetry?.clock_rejected ?? 0)}</p>
+          <p className="hint">آخرین مبدأ ردشده: {primaryTelemetry?.last_rejected_source || "—"}. شمارندهٔ فیلتر مبدأ شامل ترافیک نامرتبط اتصال‌های دیگر هم می‌شود؛ معادل افت مسیر نیست.</p>
           <div style={{ fontSize: 12.5, color: "var(--text-muted)", borderTop: "1px solid var(--border-subtle)", paddingTop: 12, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
             <span>ضربان قلب احرازشده: <strong>هر ۳ ثانیه</strong></span>
             <span>پنجرهٔ ضدبازپخش: <strong>۱۰۲۴ بسته</strong></span>

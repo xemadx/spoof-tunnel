@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -21,17 +22,20 @@ import (
 
 // PacketConn owns exactly one receive protocol and one raw send socket.
 type PacketConn struct {
-	cfg       Config
-	recv      *net.IPConn
-	send      int
-	sources   [][4]byte
-	srcIdx    uint64
-	peerIP    [4]byte
-	peers     map[string]bool
-	recvBuf   []byte
-	mu        sync.Mutex
-	closed    bool
-	closeOnce sync.Once
+	rejectedSource atomic.Value
+	lastSourceLog  time.Time
+	rejected       atomic.Uint64
+	cfg            Config
+	recv           *net.IPConn
+	send           int
+	sources        [][4]byte
+	srcIdx         uint64
+	peerIP         [4]byte
+	peers          map[string]bool
+	recvBuf        []byte
+	mu             sync.Mutex
+	closed         bool
+	closeOnce      sync.Once
 }
 
 func NewPacketConn(c Config) (*PacketConn, error) {
@@ -178,6 +182,12 @@ func (p *PacketConn) Receive() ([]byte, error) {
 			return nil, err
 		}
 		if !p.peers[addr.IP.String()] {
+			p.rejected.Add(1)
+			p.rejectedSource.Store(addr.IP.String())
+			if time.Since(p.lastSourceLog) > 10*time.Second {
+				log.Printf("source filter ignored %s; check peer allowlist (may belong to another link)", addr.IP)
+				p.lastSourceLog = time.Now()
+			}
 			continue
 		}
 		data := b[:n]
@@ -266,6 +276,7 @@ func Run(ctx context.Context, c Config) error {
 		return err
 	}
 	defer tun.Close()
+	localTunIP, _, _ := net.ParseCIDR(c.Address)
 
 	var mu sync.Mutex
 	stats := Stats{Event: "spoof_stats"}
@@ -274,6 +285,10 @@ func Run(ctx context.Context, c Config) error {
 	emit := func() {
 		mu.Lock()
 		s := stats
+		s.SourceRejected = conn.rejected.Load()
+		if source := conn.rejectedSource.Load(); source != nil {
+			s.LastRejectedSource = source.(string)
+		}
 		s.Peer = s.LastPeer > time.Now().Add(-15*time.Second).Unix()
 		if !s.Peer {
 			s.RTTMs = 0
@@ -304,25 +319,40 @@ func Run(ctx context.Context, c Config) error {
 				errCh <- err
 				return
 			}
-			if n < 20 || b[0]>>4 != 4 || n > c.MTU {
+
+			packets, err := fitIPv4(b[:n], c.MTU)
+			if err != nil {
 				mu.Lock()
 				stats.Drops++
+				if errors.Is(err, errMTU) {
+					stats.MTURejected++
+				} else {
+					stats.InvalidPackets++
+				}
 				mu.Unlock()
+				if errors.Is(err, errMTU) {
+					if reply := mtuReply(b[:n], c.MTU, localTunIP); reply != nil {
+						_, _ = tun.Write(reply)
+					}
+				}
 				continue
 			}
-			err = conn.Send(codec.Seal(1, b[:n]))
-			mu.Lock()
-			if err == nil {
-				stats.TX += uint64(n)
-				stats.TXPackets++
-			} else {
-				stats.Drops++
+			for _, packet := range packets {
+				err = conn.Send(codec.Seal(1, packet))
+				mu.Lock()
+				if err == nil {
+					stats.TX += uint64(len(packet))
+					stats.TXPackets++
+				} else {
+					stats.Drops++
+				}
+				mu.Unlock()
 			}
-			mu.Unlock()
 		}
 	}()
 
 	go func() {
+		var lastClockLog time.Time
 		for {
 			frame, err := conn.Receive()
 			if err != nil {
@@ -333,22 +363,51 @@ func Run(ctx context.Context, c Config) error {
 			if err != nil {
 				mu.Lock()
 				stats.Drops++
+				var skew *ClockSkewError
+				if errors.As(err, &skew) {
+					stats.ClockRejected++
+					stats.ClockSkewSeconds = float64(skew.Stamp) - float64(skew.Now)
+				}
 				mu.Unlock()
+				if skew != nil && time.Since(lastClockLog) > 10*time.Second {
+					log.Printf("clock diagnostic: %v (offset %.0fs)", err, float64(skew.Stamp)-float64(skew.Now))
+					lastClockLog = time.Now()
+				}
 				continue
 			}
+			mu.Lock()
+			stats.ClockSkewSeconds = 0
+			mu.Unlock()
 			switch kind {
 			case 1:
-				if len(data) < 20 || len(data) > c.MTU || data[0]>>4 != 4 || int(binary.BigEndian.Uint16(data[2:4])) != len(data) {
+
+				packets, packetErr := fitIPv4(data, c.MTU)
+				if packetErr != nil {
+					mu.Lock()
+					stats.Drops++
+					if errors.Is(packetErr, errMTU) {
+						stats.MTURejected++
+					} else {
+						stats.InvalidPackets++
+					}
+					mu.Unlock()
+					if errors.Is(packetErr, errMTU) {
+						if reply := mtuReply(data, c.MTU, localTunIP); reply != nil {
+							_ = conn.Send(codec.Seal(1, reply))
+						}
+					}
 					continue
 				}
-				if _, err = tun.Write(data); err != nil {
-					errCh <- err
-					return
+				for _, packet := range packets {
+					if _, err = tun.Write(packet); err != nil {
+						errCh <- err
+						return
+					}
+					mu.Lock()
+					stats.RX += uint64(len(packet))
+					stats.RXPackets++
+					mu.Unlock()
 				}
-				mu.Lock()
-				stats.RX += uint64(len(data))
-				stats.RXPackets++
-				mu.Unlock()
 			case 2:
 				if len(data) == 16 {
 					_ = conn.Send(codec.Seal(3, data))

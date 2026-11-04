@@ -13,6 +13,7 @@ import (
 
 // TesterConfig holds the configuration for a tester run.
 type TesterConfig struct {
+	TestID        string  `json:"test_id"`
 	Mode          string  `json:"mode"`            // "sender" or "receiver"
 	Protocol      string  `json:"protocol"`        // "tcp" or "icmp"
 	DstIP         string  `json:"dst_ip"`          // destination IP (sender mode)
@@ -38,6 +39,7 @@ type TesterResult struct {
 
 // TesterState represents the overall state.
 type TesterState struct {
+	TestID        string         `json:"test_id,omitempty"`
 	Status        string         `json:"status"` // "idle", "running", "done", "error"
 	Mode          string         `json:"mode"`
 	Error         string         `json:"error,omitempty"`
@@ -236,6 +238,9 @@ func (r *Runner) Stop() {
 }
 
 func validateConfig(cfg TesterConfig, ranges *IPRangeSet, sender bool) error {
+	if !ValidTestID(cfg.TestID) {
+		return fmt.Errorf("test_id must be the 32-character test code from the receiver")
+	}
 	if ranges == nil || ranges.Total() == 0 {
 		return fmt.Errorf("IP list is empty")
 	}
@@ -272,7 +277,7 @@ func (r *Runner) RunSender(cfg TesterConfig, ranges *IPRangeSet) error {
 		r.mu.Unlock()
 		return fmt.Errorf("tester already running")
 	}
-	r.state = TesterState{Status: "running", Mode: "sender", TotalIPs: ranges.Total()}
+	r.state = TesterState{Status: "running", Mode: "sender", TestID: cfg.TestID, TotalIPs: ranges.Total()}
 	r.cancelCh = make(chan struct{})
 	cancelCh := r.cancelCh
 	done := make(chan struct{})
@@ -312,6 +317,13 @@ func (r *Runner) RunSender(cfg TesterConfig, ranges *IPRangeSet) error {
 func (r *Runner) RunReceiver(cfg TesterConfig, ranges *IPRangeSet) error {
 	r.lifecycle.Lock()
 	defer r.lifecycle.Unlock()
+	if cfg.TestID == "" {
+		var err error
+		cfg.TestID, err = newTestID()
+		if err != nil {
+			return err
+		}
+	}
 	if err := validateConfig(cfg, ranges, false); err != nil {
 		return err
 	}
@@ -320,7 +332,7 @@ func (r *Runner) RunReceiver(cfg TesterConfig, ranges *IPRangeSet) error {
 		r.mu.Unlock()
 		return fmt.Errorf("tester already running")
 	}
-	r.state = TesterState{Status: "running", Mode: "receiver", TotalIPs: ranges.Total()}
+	r.state = TesterState{Status: "running", Mode: "receiver", TestID: cfg.TestID, TotalIPs: ranges.Total()}
 	r.cancelCh = make(chan struct{})
 	cancelCh := r.cancelCh
 	done := make(chan struct{})

@@ -42,7 +42,14 @@ type Config struct {
 
 // Stats represents real-time telemetry from an authenticated TUN tunnel.
 type Stats struct {
-	Event     string  `json:"event"`
+	Event              string  `json:"event"`
+	LastRejectedSource string  `json:"last_rejected_source,omitempty"`
+	SourceRejected     uint64  `json:"source_rejected"`
+	InvalidPackets     uint64  `json:"invalid_packets"`
+	MTURejected        uint64  `json:"mtu_rejected"`
+	ClockRejected      uint64  `json:"clock_rejected"`
+	ClockSkewSeconds   float64 `json:"clock_skew_seconds"`
+
 	Peer      bool    `json:"peer_connected"`
 	TX        uint64  `json:"tx_bytes"`
 	RX        uint64  `json:"rx_bytes"`

@@ -537,6 +537,7 @@ func (s *Server) handleSetInstanceSpoofIPs(c *gin.Context) {
 func (s *Server) handleTesterStart(c *gin.Context) {
 	var req struct {
 		Mode          string  `json:"mode" binding:"required"`
+		TestID        string  `json:"test_id"`
 		Protocol      string  `json:"protocol" binding:"required"`
 		IPList        string  `json:"ip_list"`
 		FilePath      string  `json:"file_path"`
@@ -608,7 +609,12 @@ func (s *Server) handleTesterStart(c *gin.Context) {
 		return
 	}
 
+	if (req.Mode == "sender" || req.TestID != "") && !tester.ValidTestID(req.TestID) {
+		c.JSON(400, gin.H{"error": "copy the 32-character test code from the receiver"})
+		return
+	}
 	cfg := tester.TesterConfig{
+		TestID:        req.TestID,
 		Mode:          req.Mode,
 		Protocol:      req.Protocol,
 		DstIP:         req.DstIP,
@@ -647,7 +653,7 @@ func (s *Server) handleTesterStatus(c *gin.Context) {
 			state.Results = results
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"status": state.Status, "mode": state.Mode, "error": state.Error, "progress": state.Progress, "total_ips": state.TotalIPs, "processed_ips": state.ProcessedIPs, "sent_packets": state.SentPackets, "failed_packets": state.FailedPackets, "passed_count": state.PassedCount, "recv_count": state.RecvCount, "results": state.Results, "preview_limit": 200})
+	c.JSON(http.StatusOK, gin.H{"status": state.Status, "mode": state.Mode, "error": state.Error, "progress": state.Progress, "total_ips": state.TotalIPs, "processed_ips": state.ProcessedIPs, "sent_packets": state.SentPackets, "failed_packets": state.FailedPackets, "passed_count": state.PassedCount, "recv_count": state.RecvCount, "results": state.Results, "preview_limit": 200, "test_id": state.TestID})
 }
 
 func (s *Server) handleTesterStop(c *gin.Context) {

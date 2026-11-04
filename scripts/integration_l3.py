@@ -21,11 +21,11 @@ def main():
         run('ip','-n',names[0],'route','add','198.51.100.21/32','dev','ema0')
         run('ip','-n',names[1],'route','add','198.51.100.11/32','dev','emb0')
         with tempfile.TemporaryDirectory(prefix='spoof-l3-test-') as tmp:
-            for send,recv,multi in [(a,b,False) for a in ['icmp','udp','tcp','ipip','experimental'] for b in ['icmp','udp','tcp','ipip','experimental']] + [(p,p,True) for p in ['icmp','udp','tcp','ipip','experimental']]:
+            for send,recv,multi in ([("udp","udp",False)] if os.environ.get("SPOOF_MTU_TEST") else [(a,b,False) for a in ['icmp','udp','tcp','ipip','experimental'] for b in ['icmp','udp','tcp','ipip','experimental']] + [(p,p,True) for p in ['icmp','udp','tcp','ipip','experimental']]):
                 key=base64.b64encode(os.urandom(32)).decode();case=[];logs=[]
                 try:
                     for i,role in enumerate(['local','remote']):
-                        cfg=dict(role=role,local_ip=['192.0.2.1','192.0.2.2'][i],peer_ip=['192.0.2.2','192.0.2.1'][i],spoof_source=['198.51.100.10','198.51.100.20'][i],peer_spoof=['198.51.100.20','198.51.100.10'][i],send=[send,recv][i],receive=[recv,send][i],send_port=[8090,5001][i],receive_port=[5001,8090][i],interface='sptun0',address=['10.77.0.1/30','10.77.0.2/30'][i],peer_address=['10.77.0.2','10.77.0.1'][i],mtu=1280,psk=key)
+                        cfg=dict(role=role,local_ip=['192.0.2.1','192.0.2.2'][i],peer_ip=['192.0.2.2','192.0.2.1'][i],spoof_source=['198.51.100.10','198.51.100.20'][i],peer_spoof=['198.51.100.20','198.51.100.10'][i],send=[send,recv][i],receive=[recv,send][i],send_port=[8090,5001][i],receive_port=[5001,8090][i],interface='sptun0',address=['10.77.0.1/30','10.77.0.2/30'][i],peer_address=['10.77.0.2','10.77.0.1'][i],mtu=([1300,1000][i] if os.environ.get("SPOOF_MTU_TEST") else 1280),psk=key)
                         if multi:
                             cfg['spoof_sources']=[['198.51.100.10','198.51.100.11'],['198.51.100.20','198.51.100.21']][i]
                             cfg['peer_spoofs']=[['198.51.100.20','198.51.100.21'],['198.51.100.10','198.51.100.11']][i]
@@ -59,8 +59,10 @@ while True:
  if not c:break
  b+=c
 assert b==p,('tcp mismatch',len(b));s.close()
-s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(8);s.sendto(b'UDP exact payload',('10.77.0.2',19002));assert s.recv(4096)==b'UDP exact payload';s.close()
+s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(8);s.sendto(b'x'*2000,('10.77.0.2',19002));assert s.recv(4096)==b'x'*2000;s.close()
 '''
+                    if os.environ.get('SPOOF_MTU_TEST'):
+                        client="import socket,struct,time\nprobe=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);probe.setsockopt(socket.IPPROTO_IP,10,2);probe.setsockopt(socket.IPPROTO_IP,11,1);probe.setblocking(False)\nprobe.sendto(b'd'*1100,('10.77.0.2',19002))\nlimit=time.monotonic()+5\nwhile True:\n try:\n  _,anc,_,_=probe.recvmsg(4096,4096,socket.MSG_ERRQUEUE);break\n except BlockingIOError:\n  assert time.monotonic()<limit,'no ICMP MTU feedback';time.sleep(.01)\nerrors=[struct.unpack('=IBBBBII',data[:16]) for level,kind,data in anc if level==socket.IPPROTO_IP and kind==11]\nassert any(err[0]==90 and err[1]==2 and err[2]==3 and err[3]==4 and err[5]==1000 for err in errors),errors\nprobe.close()\n"+client
                     run('ip','netns','exec',names[0],'python3','-c',client,timeout=20);srv.wait(timeout=5)
                     for log in logs:
                         log.flush();log.seek(0);text=log.read();assert '"peer_connected":true' in text,text

@@ -99,6 +99,22 @@ def main():
                     run('ip','netns','exec',NAMES[0],'python3','-c',CLIENT_CODE,f'10.77.0.{2+index*4}',str(11001+index),f'FOREIGN-{index+1}:',timeout=15)
                 with concurrent.futures.ThreadPoolExecutor(max_workers=6) as workers:
                     list(workers.map(probe,[index%3 for index in range(18)]))
+                # Kill only the core owned by this private namespace and config.
+                candidates=[]
+                for pid in run('ip','netns','pids',NAMES[0]).stdout.split():
+                    try:arguments=pathlib.Path('/proc',pid,'cmdline').read_bytes().split(b'\0')
+                    except FileNotFoundError:continue
+                    if any(arg.endswith(f'tunnel-config-{ids[0]}.json'.encode()) for arg in arguments):candidates.append(int(pid))
+                assert len(candidates)==1,candidates
+                os.kill(candidates[0],9)
+                probe(1);probe(2)
+                for attempt in range(80):
+                    status=api('GET',f'/instances/{ids[0]}/status')
+                    if not pathlib.Path('/proc',str(candidates[0])).exists() and status['status']=='running' and status['telemetry']['peer_connected']:
+                        try:probe(0);break
+                        except RuntimeError:pass
+                    time.sleep(.2)
+                else:raise AssertionError('crashed core was not recovered')
                 api('POST',f'/instances/{ids[0]}/stop',{})
                 probe(1);probe(2)  # Stopping one tunnel must leave its neighbours operational.
                 assert not api('GET',f'/instances/{ids[0]}/forwards')[0]['listening']
@@ -110,7 +126,7 @@ def main():
                 probe(0);probe(1);probe(2)
                 for index,ident in enumerate(ids):
                     rules=api('GET',f'/instances/{ident}/forwards');assert rules[0]['listening'];assert rules[0]['target']==f'10.77.0.{2+index*4}:19001'
-                print(f'PASS simultaneous {carrier}: one Iran IP, three peers, shared carrier ports AND spoof source, separate TUN networks, concurrent service replies and forward ports; duplicate subnet/entry rejected; stop/restart isolated',flush=True)
+                print(f'PASS simultaneous {carrier}: one Iran IP, three peers, shared carrier ports AND spoof source, separate TUN networks, concurrent service replies and forward ports; duplicate subnet/entry rejected; crash recovery and manual stop/restart isolated',flush=True)
                 for ident in ids:api('DELETE',f'/instances/{ident}')
                 for process in cores:process.terminate();process.wait(timeout=5)
         finally:

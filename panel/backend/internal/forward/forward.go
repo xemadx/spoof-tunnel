@@ -39,13 +39,15 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
 // Forwarder is one TCP listen -> target pipe.
 type Forwarder struct {
-	ListenAddr string // e.g. "0.0.0.0:443"
-	TargetAddr string // e.g. "10.77.0.2:443" (peer TUN IP + inbound port)
+	BindInterface string // Set before Start; confines target dials to this TUN.
+	ListenAddr    string // e.g. "0.0.0.0:443"
+	TargetAddr    string // e.g. "10.77.0.2:443" (peer TUN IP + inbound port)
 
 	lifecycle sync.Mutex
 	cancel    context.CancelFunc
@@ -201,6 +203,11 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	defer f.wg.Done()
 	defer func() { _ = client.Close(); f.mu.Lock(); delete(f.conns, client); f.mu.Unlock() }()
 	dialer := net.Dialer{Timeout: 10 * time.Second}
+	if f.BindInterface != "" {
+		dialer.Control = func(network, address string, raw syscall.RawConn) error {
+			return bindTunnelSocket(f.BindInterface, raw)
+		}
+	}
 	target, err := dialer.DialContext(ctx, "tcp", f.TargetAddr)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -217,6 +224,7 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 		return
 	}
 	f.conns[target] = struct{}{}
+	f.lastErr = ""
 	f.mu.Unlock()
 	copied := make(chan struct{}, 2)
 	copyOne := func(dst, src net.Conn, counter *int64) {

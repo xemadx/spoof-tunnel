@@ -198,3 +198,28 @@ test('sender completion reports real processed sources and packet counters', asy
  await expect(counters).toContainText('۶۰');
  await expect(counters).toContainText('خطاهای ارسال: ۰');
 });
+
+test('receiver exposes a test code and sender submits that shared code', async ({ page }) => {
+ await mock(page);
+ const code='0123456789abcdef0123456789abcdef';
+ await page.route('**/api/tester/status',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({status:'idle',mode:'receiver',test_id:code,progress:0,total_ips:0,results:[]})}));
+ let submitted: Record<string,unknown>|undefined;
+ await page.route('**/api/tester/start',route=>{submitted=route.request().postDataJSON();return route.fulfill({contentType:'application/json',body:'{"status":"started"}'});});
+ await page.goto(prefix+'/dashboard/tester/');
+ await expect(page.getByText(code,{exact:true})).toBeVisible();
+ await page.getByRole('tab',{name:'فرستندهٔ آزمون (Sender)'}).click();
+ await page.getByLabel('کد مشترک آزمون',{exact:true}).fill(code);
+ await page.getByLabel('IP مقصد (سرور گیرنده)',{exact:true}).fill('192.0.2.2');
+ await page.locator('textarea').fill('198.51.100.1');
+ await page.getByRole('button',{name:'شروع آزمون فرستنده',exact:true}).click();
+ await expect.poll(()=>submitted?.test_id).toBe(code);
+});
+
+test('test-code copy remains usable when HTTP clipboard access is unavailable', async ({ page }) => {
+ await mock(page);
+ await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{value:undefined,configurable:true}));
+ await page.route('**/api/tester/status',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({status:'running',mode:'receiver',test_id:'0123456789abcdef0123456789abcdef',progress:1,total_ips:1,results:[]})}));
+ await page.goto(prefix+'/dashboard/tester/');
+ await page.getByRole('button',{name:'کپی کد آزمون',exact:true}).click();
+ await expect(page.getByText('کد را دستی کپی کن.',{exact:true})).toBeVisible();
+});

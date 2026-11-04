@@ -46,10 +46,10 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.3.5**:
+To explicitly install **v0.3.6**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.5/install.sh | SPOOF_RELEASE=v0.3.5 bash
+curl -fsSL https://raw.githubusercontent.com/emad1381/spoof-tunnel/v0.3.6/install.sh | SPOOF_RELEASE=v0.3.6 bash
 ```
 
 Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS`. No Go, Node.js or Rust toolchain is needed on the VPS.
@@ -137,13 +137,13 @@ Rotating local spoof sources require the **same list in the other end's allowed-
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.3.5 bash scripts/build.sh
+SPOOF_VERSION=v0.3.6 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
 The build exports the frontend, embeds it in `spoof-panel`, builds `spoof-l3` and packages both with the installer and documentation. GitHub Actions validates the source before creating release packages for both architectures.
 
-Validation includes **25 ordered carrier combinations**, **five rotating-source cases**, delayed heartbeats above three seconds RTT, and **one Iran + three simultaneous foreign peers on all five carriers** with concurrent TCP/UDP probes and isolated stop/restart. **15 browser scenarios** cover panel behavior and locally served Persian fonts; Go race tests and real HTTP/SQLite tests cover the backend. Reproduce them with [Testing](docs/TESTING.md). See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md) and the [fix report](docs/FIXES-2026-11-01.md).
+Validation includes **25 ordered carrier combinations**, **five rotating-source cases**, delayed heartbeats above three seconds RTT, and **one Iran + three simultaneous foreign peers on all five carriers** with concurrent TCP/UDP probes and isolated stop/restart. **17 browser scenarios** cover panel behavior and locally served Persian fonts; Go race tests and real HTTP/SQLite tests cover the backend. Reproduce them with [Testing](docs/TESTING.md). See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md) and the [fix report](docs/FIXES-2026-11-01.md).
 
 ## Limits and attribution
 
@@ -154,3 +154,11 @@ Namespace tests establish behavior in isolated Linux networks; they do not estab
 Derived from [ParsaKSH/spoof-tunnel](https://github.com/ParsaKSH/spoof-tunnel), with upstream history retained. Licensed under [Apache-2.0](LICENSE); see [NOTICE](NOTICE). This project is not PenguTunnel and is not wire-compatible with it.
 
 Password recovery during an update: choose **2** in the installer to generate and display a new password; **1** keeps the current password. The prompt reads `/dev/tty` even with `curl | bash`. For unattended explicit resets, pipe the installer into `SPOOF_PASSWORD_ACTION=reset bash`. Fresh-install and reset credentials appear at the end of successful installation. Plaintext passwords are not written to disk.
+
+### v0.3.6 reliability and diagnostics
+
+Unexpected tunnel exits trigger cancellable recovery with exponential backoff from 1 to 30 seconds. Explicit Stop and deletion cancel pending recovery; the boot auto-start setting remains independent. TCP forward target sockets are bound to their TUN device, preventing fallback to another route during startup or failure.
+
+For spoof tests, update **both panels**. Start the receiver with an empty test code to generate a fresh code, copy the displayed 32-character code into the sender, then start sending. Probes include a per-run HMAC and source-bound sequence number; only unique authenticated sequences count. Older tester packets are intentionally rejected. Use a fresh code for every test.
+
+Authenticated out-of-window frames produce clock/delay diagnostics after authentication, without changing the system clock or widening the replay window. The dashboard separates source-filter, malformed-packet, MTU and timestamp rejections and shows the latest filtered source. Source-filter counts include unrelated links and are not path loss. Oversized IPv4 packets without DF are fragmented; DF packets elicit ICMP fragmentation-needed with the next-hop MTU. Incoming invalid packets are counted too.

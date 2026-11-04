@@ -15,6 +15,12 @@ import (
 
 const headerSize = 36
 
+type ClockSkewError struct{ Stamp, Now int64 }
+
+func (e *ClockSkewError) Error() string {
+	return "authenticated frame timestamp outside acceptance window; check clock synchronization or delayed traffic"
+}
+
 var errFrame = errors.New("invalid, expired, unauthenticated or replayed frame")
 
 type replay struct {
@@ -87,9 +93,6 @@ func (c *Codec) Open(frame []byte) (byte, []byte, error) {
 	}
 	now := time.Now().Unix()
 	stamp := int64(binary.BigEndian.Uint64(frame[28:36]))
-	if stamp < now-120 || stamp > now+30 {
-		return 0, nil, errFrame
-	}
 	var session [16]byte
 	copy(session[:], frame[4:20])
 	seq := binary.BigEndian.Uint64(frame[20:28])
@@ -115,6 +118,9 @@ func (c *Codec) Open(frame []byte) (byte, []byte, error) {
 		return 0, nil, errFrame
 	}
 
+	if stamp < now-120 || stamp > now+30 {
+		return 0, nil, &ClockSkewError{Stamp: stamp, Now: now}
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	r := c.peers[session]
