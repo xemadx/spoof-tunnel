@@ -3,6 +3,7 @@
 package l3
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -36,6 +37,13 @@ type PacketConn struct {
 	mu             sync.Mutex
 	closed         bool
 	closeOnce      sync.Once
+	pool           *SourcePool
+	controlRX      []byte
+	controlTX      []byte
+	peerAccepted   atomic.Bool
+	peerReady      atomic.Bool
+	unknownWindow  time.Time
+	unknownCount   int
 }
 
 func NewPacketConn(c Config) (*PacketConn, error) {
@@ -84,6 +92,8 @@ func NewPacketConn(c Config) (*PacketConn, error) {
 		allowed[ip.String()] = true
 	}
 	return &PacketConn{
+		pool:      NewSourcePool(rawSources, c.PoolPolicy),
+		controlRX: poolAdmissionPrefix(c, true), controlTX: poolAdmissionPrefix(c, false),
 		cfg:     c,
 		peers:   allowed,
 		recvBuf: make([]byte, 65535),
@@ -109,7 +119,22 @@ func checksum(b []byte) uint16 {
 	return ^uint16(n)
 }
 
-func (p *PacketConn) Send(payload []byte) error {
+func (p *PacketConn) Send(payload []byte) error     { return p.sendSelected(payload, true) }
+func (p *PacketConn) SendData(payload []byte) error { return p.sendSelected(payload, false) }
+func (p *PacketConn) sendSelected(payload []byte, control bool) error {
+	if !control && p.cfg.PoolPolicy.Normalized().Mode != "legacy" && (!p.peerReady.Load() || (p.cfg.AutoPeerSync && !p.peerAccepted.Load())) {
+		return fmt.Errorf("waiting for verified peer readiness and source manifest acknowledgement")
+	}
+	if p.pool != nil {
+		source, err := p.pool.Select(control)
+		if err != nil {
+			return err
+		}
+		return p.SendFrom(payload, source)
+	}
+	return p.SendFrom(payload, nil)
+}
+func (p *PacketConn) SendFrom(payload []byte, chosen net.IP) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -132,6 +157,9 @@ func (p *PacketConn) Send(payload []byte) error {
 	// Rotate source IPv4 round-robin when multiple sources are configured.
 	src := p.sources[p.srcIdx%uint64(len(p.sources))]
 	p.srcIdx++
+	if chosen != nil {
+		copy(src[:], chosen.To4())
+	}
 	copy(b[12:16], src[:])
 	copy(b[16:20], p.peerIP[:])
 	binary.BigEndian.PutUint16(b[10:12], checksum(b[:20]))
@@ -175,21 +203,21 @@ func (p *PacketConn) Send(payload []byte) error {
 }
 
 func (p *PacketConn) Receive() ([]byte, error) {
+	frame, _, _, err := p.receivePacket(false)
+	return frame, err
+}
+func (p *PacketConn) receivePacket(controlAdmission bool) ([]byte, string, bool, error) {
 	b := p.recvBuf
 	for {
 		n, addr, err := p.recv.ReadFromIP(b)
 		if err != nil {
-			return nil, err
+			return nil, "", false, err
 		}
-		if !p.peers[addr.IP.String()] {
-			p.rejected.Add(1)
-			p.rejectedSource.Store(addr.IP.String())
-			if time.Since(p.lastSourceLog) > 10*time.Second {
-				log.Printf("source filter ignored %s; check peer allowlist (may belong to another link)", addr.IP)
-				p.lastSourceLog = time.Now()
-			}
-			continue
-		}
+		source := addr.IP.String()
+		p.mu.Lock()
+		allowed := p.peers[source]
+		p.mu.Unlock()
+
 		data := b[:n]
 		proto := Protocol(p.cfg.Receive)
 		// net.IPConn strips the outer IPv4 header. Parse only the carrier header.
@@ -218,8 +246,28 @@ func (p *PacketConn) Receive() ([]byte, error) {
 			}
 			data = data[8:length]
 		}
+		control := len(p.controlRX) > 0 && len(data) > len(p.controlRX) && bytes.Equal(data[:len(p.controlRX)], p.controlRX)
+		if !allowed {
+			if !controlAdmission || !control {
+				p.rejected.Add(1)
+				p.rejectedSource.Store(source)
+				continue
+			}
+			now := time.Now()
+			if now.Sub(p.unknownWindow) >= time.Second {
+				p.unknownWindow = now
+				p.unknownCount = 0
+			}
+			if p.unknownCount >= 100 || len(data) > 1500 {
+				continue
+			}
+			p.unknownCount++
+		}
+		if control {
+			data = data[len(p.controlRX):]
+		}
 		if len(data) > 0 {
-			return append([]byte(nil), data...), nil
+			return append([]byte(nil), data...), source, allowed, nil
 		}
 	}
 }
@@ -281,6 +329,11 @@ func Run(ctx context.Context, c Config) error {
 	var mu sync.Mutex
 	stats := Stats{Event: "spoof_stats"}
 	pending := make(challenges)
+	runtime := newPoolRuntime(c, conn, codec)
+	if err := runtime.start(ctx); err != nil {
+		return err
+	}
+	defer runtime.close()
 
 	emit := func() {
 		mu.Lock()
@@ -289,7 +342,12 @@ func Run(ctx context.Context, c Config) error {
 		if source := conn.rejectedSource.Load(); source != nil {
 			s.LastRejectedSource = source.(string)
 		}
-		s.Peer = s.LastPeer > time.Now().Add(-15*time.Second).Unix()
+		s.PoolMode = c.PoolPolicy.Normalized().Mode
+		s.PoolReady = conn.pool.Ready() && (!c.AutoPeerSync || s.PoolMode == "legacy" || conn.peerAccepted.Load())
+		if s.PoolMode != "legacy" {
+			s.PoolReady = s.PoolReady && conn.peerReady.Load()
+		}
+		s.Peer = s.LastPeer > time.Now().Add(-15*time.Second).Unix() && s.PoolReady
 		if !s.Peer {
 			s.RTTMs = 0
 		}
@@ -338,7 +396,7 @@ func Run(ctx context.Context, c Config) error {
 				continue
 			}
 			for _, packet := range packets {
-				err = conn.Send(codec.Seal(1, packet))
+				err = conn.SendData(codec.Seal(1, packet))
 				mu.Lock()
 				if err == nil {
 					stats.TX += uint64(len(packet))
@@ -354,7 +412,7 @@ func Run(ctx context.Context, c Config) error {
 	go func() {
 		var lastClockLog time.Time
 		for {
-			frame, err := conn.Receive()
+			frame, observedSource, sourceAllowed, err := conn.receivePacket(true)
 			if err != nil {
 				errCh <- err
 				return
@@ -375,6 +433,18 @@ func Run(ctx context.Context, c Config) error {
 				}
 				continue
 			}
+			if kind == 5 {
+				runtime.receiveProbe(data, observedSource)
+				continue
+			}
+			if kind == 4 {
+				runtime.receive(data, observedSource)
+				continue
+			}
+			if !sourceAllowed {
+				continue
+			}
+			runtime.markControlSeen()
 			mu.Lock()
 			stats.ClockSkewSeconds = 0
 			mu.Unlock()
@@ -393,7 +463,7 @@ func Run(ctx context.Context, c Config) error {
 					mu.Unlock()
 					if errors.Is(packetErr, errMTU) {
 						if reply := mtuReply(data, c.MTU, localTunIP); reply != nil {
-							_ = conn.Send(codec.Seal(1, reply))
+							_ = conn.SendData(codec.Seal(1, reply))
 						}
 					}
 					continue
@@ -415,6 +485,7 @@ func Run(ctx context.Context, c Config) error {
 			case 3:
 				mu.Lock()
 				if sent, ok := pending.accept(data, time.Now()); ok {
+					runtime.markRoundTrip(time.Since(sent))
 					stats.LastPeer = time.Now().Unix()
 					stats.RTTMs = float64(time.Since(sent).Microseconds()) / 1000
 				}

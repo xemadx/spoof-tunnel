@@ -19,13 +19,16 @@ var Version = "dev"
 
 // Config describes one authenticated IPv4 point-to-point TUN link.
 type Config struct {
-	Role        string `json:"role"`
-	LocalIP     string `json:"local_ip"`
-	PeerIP      string `json:"peer_ip"`
-	SpoofSource string `json:"spoof_source"`
-	// SpoofSources optionally rotates the transmitted source address across
-	// several IPv4 addresses (round-robin, one per datagram). When empty the
-	// single SpoofSource is used.
+	PoolPolicy    PoolPolicy `json:"pool_policy,omitempty"`
+	ControlSocket string     `json:"control_socket,omitempty"`
+	PoolStateFile string     `json:"pool_state_file,omitempty"`
+	AutoPeerSync  bool       `json:"auto_peer_sync,omitempty"`
+	Role          string     `json:"role"`
+	LocalIP       string     `json:"local_ip"`
+	PeerIP        string     `json:"peer_ip"`
+	SpoofSource   string     `json:"spoof_source"`
+	// SpoofSources defines transmit candidates governed by PoolPolicy. Empty
+	// policy preserves legacy rotation. Without candidates SpoofSource is used.
 	SpoofSources []string `json:"spoof_sources,omitempty"`
 	PeerSpoof    string   `json:"peer_spoof"`
 	PeerSpoofs   []string `json:"peer_spoofs,omitempty"`
@@ -43,6 +46,8 @@ type Config struct {
 // Stats represents real-time telemetry from an authenticated TUN tunnel.
 type Stats struct {
 	Event              string  `json:"event"`
+	PoolMode           string  `json:"pool_mode,omitempty"`
+	PoolReady          bool    `json:"pool_ready"`
 	LastRejectedSource string  `json:"last_rejected_source,omitempty"`
 	SourceRejected     uint64  `json:"source_rejected"`
 	InvalidPackets     uint64  `json:"invalid_packets"`
@@ -89,6 +94,9 @@ func unicast4(value string) (net.IP, bool) {
 // Sources returns the effective, de-duplicated list of spoof source addresses.
 func (c Config) Sources() ([]net.IP, error) {
 	raw := c.SpoofSources
+	if len(raw) > MaxPoolSources {
+		return nil, fmt.Errorf("source pool exceeds %d addresses", MaxPoolSources)
+	}
 	if len(raw) == 0 {
 		if c.SpoofSource == "" {
 			return nil, fmt.Errorf("at least one spoof source address is required")
@@ -147,6 +155,9 @@ func (c Config) PeerSources() ([]net.IP, error) {
 }
 
 func (c Config) Validate() error {
+	if err := c.PoolPolicy.Validate(); err != nil {
+		return err
+	}
 	if c.Role != "local" && c.Role != "remote" {
 		return fmt.Errorf("role must be local or remote")
 	}

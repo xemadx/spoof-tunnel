@@ -387,6 +387,7 @@ func (m *Manager) RemoveInstance(id uint) {
 	// Clean up files
 	os.Remove(m.configFilePath(id))
 	os.Remove(m.spoofIPFilePath(id))
+	os.Remove(filepath.Join(m.configDir, fmt.Sprintf("pool-state-%d.json", id)))
 }
 
 // StopAll stops all running instances
@@ -525,7 +526,10 @@ func (m *Manager) generateConfig(cfg db.TunnelInstance) (string, error) {
 
 	var value interface{} = tunnelCfg
 	if cfg.Engine == "tun" {
-		value = cfg.L3Config()
+		l3cfg := cfg.L3Config()
+		l3cfg.ControlSocket = m.PoolSocket(cfg.ID)
+		l3cfg.PoolStateFile = filepath.Join(m.configDir, fmt.Sprintf("pool-state-%d.json", cfg.ID))
+		value = l3cfg
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
@@ -583,6 +587,9 @@ func (m *Manager) Telemetry(id uint) l3.Stats {
 	defer inst.mu.Unlock()
 	s := inst.telemetry
 	s.Peer = inst.status == StatusRunning && s.LastPeer > time.Now().Add(-15*time.Second).Unix()
+	if s.PoolMode != "" && s.PoolMode != "legacy" {
+		s.Peer = s.Peer && s.PoolReady
+	}
 	return s
 }
 
@@ -720,4 +727,8 @@ func (m *Manager) RecoveryStatus(id uint) RecoveryState {
 		state.NextRetryAt = inst.retryNextAt.Unix()
 	}
 	return state
+}
+
+func (m *Manager) PoolSocket(id uint) string {
+	return filepath.Join(m.configDir, fmt.Sprintf("pool-control-%d.sock", id))
 }

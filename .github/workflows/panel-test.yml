@@ -40,8 +40,14 @@ jobs:
       - run: sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" python3 scripts/integration_tester.py
       - run: sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" python3 scripts/integration_forward.py
       - run: sudo env SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
+      - name: Smart pools, authenticated sync and one-sided restart
+        run: sudo env SPOOF_SMART_POOL=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
+      - name: Raw source quarantine and pool replay regressions
+        run: sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" go test -race ./internal/l3
       - run: sudo env SPOOF_MTU_TEST=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
       - run: sudo env SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_delay.py
+      - name: Adaptive pool on a delayed path (RTT greater than 3 seconds)
+        run: sudo env SPOOF_SMART_POOL=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_delay.py
       - run: sudo python3 scripts/integration_multipeer.py
       - run: python3 scripts/smoke_panel.py
         env:

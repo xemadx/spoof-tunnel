@@ -21,7 +21,7 @@ def main():
         run('ip','-n',names[0],'route','add','198.51.100.21/32','dev','ema0')
         run('ip','-n',names[1],'route','add','198.51.100.11/32','dev','emb0')
         with tempfile.TemporaryDirectory(prefix='spoof-l3-test-') as tmp:
-            for send,recv,multi in ([("udp","udp",False)] if os.environ.get("SPOOF_MTU_TEST") else [(a,b,False) for a in ['icmp','udp','tcp','ipip','experimental'] for b in ['icmp','udp','tcp','ipip','experimental']] + [(p,p,True) for p in ['icmp','udp','tcp','ipip','experimental']]):
+            for send,recv,multi in ([(p,p,True) for p in ["icmp","udp","tcp","ipip","experimental"]]+[("icmp","tcp",True)] if os.environ.get("SPOOF_SMART_POOL") else [("udp","udp",False)] if os.environ.get("SPOOF_MTU_TEST") else [(a,b,False) for a in ['icmp','udp','tcp','ipip','experimental'] for b in ['icmp','udp','tcp','ipip','experimental']] + [(p,p,True) for p in ['icmp','udp','tcp','ipip','experimental']]):
                 key=base64.b64encode(os.urandom(32)).decode();case=[];logs=[]
                 try:
                     for i,role in enumerate(['local','remote']):
@@ -29,10 +29,43 @@ def main():
                         if multi:
                             cfg['spoof_sources']=[['198.51.100.10','198.51.100.11'],['198.51.100.20','198.51.100.21']][i]
                             cfg['peer_spoofs']=[['198.51.100.20','198.51.100.21'],['198.51.100.10','198.51.100.11']][i]
+                        if os.environ.get('SPOOF_SMART_POOL'):
+                            cfg['pool_policy']={'mode':'adaptive','probe_pps':100}
+                            cfg['auto_peer_sync']=True
+                            cfg['pool_state_file']=str(pathlib.Path(tmp)/f'{role}-state.json')
+                            cfg['control_socket']=str(pathlib.Path(tmp)/f'{role}.sock')
+                            cfg['peer_spoofs']=[]
+                            cfg['peer_spoof']='198.51.100.250'
                         p=pathlib.Path(tmp)/f'{role}.json';p.write_text(json.dumps(cfg));os.chmod(p,0o600)
                         log=open(pathlib.Path(tmp)/f'{role}.log','w+');logs.append(log)
                         proc=subprocess.Popen(['ip','netns','exec',names[i],str(BINARY),'--config',str(p)],stdout=log,stderr=log);case.append(proc);processes.append(proc)
-                    time.sleep(4)
+                    def wait_ready():
+                        import socket
+                        until=time.monotonic()+35
+                        while time.monotonic()<until:
+                            ready=[]
+                            for role in ['local','remote']:
+                                try:
+                                    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as ipc:
+                                        ipc.settimeout(1);ipc.connect(str(pathlib.Path(tmp)/f'{role}.sock'));ipc.sendall(b'{"op":"status"}\n')
+                                        status=json.load(ipc.makefile())['status']
+                                        ready.append(status['pool']['healthy']>0 and status['our_sources_accepted'] and status['peer_ready'])
+                                except (OSError,ValueError,KeyError):ready.append(False)
+                            if all(ready):return
+                            assert all(p.poll() is None for p in case),'engine exited during readiness'
+                            time.sleep(.1)
+                        raise AssertionError('both smart engines did not become ready')
+                    if os.environ.get('SPOOF_SMART_POOL'):
+                        wait_ready()
+                        telemetry_deadline=time.monotonic()+10
+                        while time.monotonic()<telemetry_deadline:
+                            observed=[]
+                            for log in logs:
+                                log.flush();log.seek(0);observed.append('"peer_connected":true' in log.read())
+                            if all(observed):break
+                            time.sleep(.1)
+                        else:raise AssertionError('smart heartbeat telemetry did not confirm both peers')
+                    else:time.sleep(4)
                     run('ip','netns','exec',names[0],'ping','-c','3','-W','2','10.77.0.2',timeout=12)
                     server='''import socket,threading,time
 def serve(kind,port):
@@ -64,6 +97,11 @@ s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(8);s.sendto(b'x'*
                     if os.environ.get('SPOOF_MTU_TEST'):
                         client="import socket,struct,time\nprobe=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);probe.setsockopt(socket.IPPROTO_IP,10,2);probe.setsockopt(socket.IPPROTO_IP,11,1);probe.setblocking(False)\nprobe.sendto(b'd'*1100,('10.77.0.2',19002))\nlimit=time.monotonic()+5\nwhile True:\n try:\n  _,anc,_,_=probe.recvmsg(4096,4096,socket.MSG_ERRQUEUE);break\n except BlockingIOError:\n  assert time.monotonic()<limit,'no ICMP MTU feedback';time.sleep(.01)\nerrors=[struct.unpack('=IBBBBII',data[:16]) for level,kind,data in anc if level==socket.IPPROTO_IP and kind==11]\nassert any(err[0]==90 and err[1]==2 and err[2]==3 and err[3]==4 and err[5]==1000 for err in errors),errors\nprobe.close()\n"+client
                     run('ip','netns','exec',names[0],'python3','-c',client,timeout=20);srv.wait(timeout=5)
+                    if os.environ.get('SPOOF_SMART_POOL'):
+                        case[0].terminate();case[0].wait(timeout=5)
+                        proc=subprocess.Popen(['ip','netns','exec',names[0],str(BINARY),'--config',str(pathlib.Path(tmp)/'local.json')],stdout=logs[0],stderr=logs[0]);case[0]=proc;processes.append(proc)
+                        wait_ready()
+                        run('ip','netns','exec',names[0],'ping','-c','2','-W','2','10.77.0.2',timeout=10)
                     for log in logs:
                         log.flush();log.seek(0);text=log.read();assert '"peer_connected":true' in text,text
                     report.append(dict(send=send,receive=recv,multi_source=multi,icmp=True,tcp_bytes=131072,udp=True,authenticated_heartbeat=True));print(f'PASS {send}/{recv} multi_source={multi}',flush=True)

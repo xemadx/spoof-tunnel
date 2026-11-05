@@ -49,7 +49,7 @@ Each link needs a unique `/30`; the builder creates an interface name. Stop a ru
 
 To roll back, restore a matching old binary pair and database backup, then restart. There is no remote automatic updater. Disabling the systemd service preserves the data.
 
-For a rotating spoof source list, copy that list to **فهرست مبدأهای مجاز طرف مقابل** on the other host. Saving a local transmit pool cannot automatically update a separately administered peer. Every source must be allowed by the peer and routable through the providers. Stop both ends before changing source lists, then start both again.
+For a rotating spoof source list, copy that list to **فهرست مبدأهای مجاز طرف مقابل** on the other host. With updated engines, the pool tab can request an authenticated peer manifest; automatic sync must be enabled on both ends for unattended operation. See [smart pools](SMART-POOLS.md). Every source must be allowed by the peer and routable through the providers. Stop both ends before changing source lists, then start both again.
 
 The `--bind 127.0.0.1` flag supports management exclusively through a local reverse proxy/SSH forwarding. `SPOOF_PUBLIC_IP` can override the address displayed in setup information. WebSocket authentication uses a subprotocol header, so JWTs do not appear in log-stream URLs.
 

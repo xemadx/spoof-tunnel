@@ -16,14 +16,14 @@ function apiBase() { return typeof window === 'undefined' ? '/api' : `${window.l
 function getToken() { return typeof window === 'undefined' ? null : localStorage.getItem('token'); }
 export function setToken(token: string) { localStorage.setItem('token', token); }
 export function clearToken() { localStorage.removeItem('token'); }
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 15000): Promise<T> {
  const controller = new AbortController();
- const timeout = setTimeout(() => controller.abort(), 15000);
+ const timeout = setTimeout(() => controller.abort(), timeoutMs);
  const abort = () => controller.abort();
  options.signal?.addEventListener('abort', abort, { once: true });
  if (options.signal?.aborted) controller.abort();
  try {
-  const headers = new Headers(options.headers); headers.set('Content-Type', 'application/json');
+  const headers = new Headers(options.headers); if (!(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   const token = getToken(); if (token) headers.set('Authorization', `Bearer ${token}`);
   const res = await fetch(`${apiBase()}${path}`, { ...options, headers, signal: controller.signal });
   if (res.status === 401 && path !== '/auth/login') { clearToken(); window.location.replace(getBasePath() + '/login/'); throw new Error('نشست شما منقضی شده است؛ دوباره وارد شوید.'); }
@@ -41,15 +41,30 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
  } finally { clearTimeout(timeout); options.signal?.removeEventListener('abort', abort); }
 }
 
+export type PoolFile = { kind?: "default" | "file"; id: number; name: string; count: number; enabled: boolean; position: number; hash: string };
+export type PoolFiles = { files: PoolFile[]; mode: string; probe_pps: number; auto_peer_sync: boolean; total: number; peer_count: number; legacy_content: boolean; updated_at: string };
+export type SourceQuality = { ip: string; state: string; rtt_ms: number; loss_pct: number; probes: number; replies: number; failures: number; retry_at?: number; last_success?: number };
+export type PoolState = { available: boolean; reason?: string; runtime?: { persistence_error?: string; peer_ready: boolean; control_fresh: boolean; our_sources_accepted: boolean; pool: { mode: string; total: number; healthy: number; testing: number; quarantined: number; unknown: number; active?: string; offset: number; items: SourceQuality[] }; peer: { in_flight?: boolean; supported: boolean; status: string; error?: string; count: number; revision?: string; progress: number } } };
 export const api = {
+ poolDefault: (id: number) => request<{ content: string; count: number; updated_at: string }>(`/instances/${id}/pools/default`, {}, 120000),
+ poolDefaultSave: (id: number, content: string, version: string) => { const data = new FormData(); data.append('file', new Blob([content], { type: 'text/plain' }), 'default.txt'); data.append('updated_at', version); return request<{ count: number; updated_at: string }>(`/instances/${id}/pools/default`, { method: 'POST', body: data }, 120000); },
+ poolFiles: (id: number, signal?: AbortSignal) => request<PoolFiles>(`/instances/${id}/pools`, { signal }),
+ poolUpload: (id: number, file: File) => { const data = new FormData(); data.append('file', file); return request<PoolFile>(`/instances/${id}/pools/upload`, { method: 'POST', body: data }, 120000); },
+ poolMigrate: (id: number) => request<PoolFile>(`/instances/${id}/pools/migrate`, { method: 'POST' }),
+ poolSettings: (id: number, data: { ids: number[]; mode: string; probe_pps: number; auto_peer_sync: boolean; updated_at: string }) => request<{ total: number; updated_at: string }>(`/instances/${id}/pools/settings`, { method: 'PUT', body: JSON.stringify(data) }),
+ poolDelete: (id: number, file: number) => request<{ ok: boolean }>(`/instances/${id}/pools/${file}`, { method: 'DELETE' }),
+ poolState: (id: number, offset: number, state: string, signal?: AbortSignal) => request<PoolState>(`/instances/${id}/pools/state?offset=${offset}&limit=50&state=${encodeURIComponent(state)}`, { signal }),
+ poolCancelSync: (id: number) => request<{ ok: boolean }>(`/instances/${id}/pools/sync/cancel`, { method: 'POST' }),
+ poolSync: (id: number) => request<{ ok: boolean }>(`/instances/${id}/pools/sync`, { method: 'POST' }),
+
  checkAuth: () => request<{ needs_setup: boolean }>('/auth/check'),
  login: (username: string, password: string) => request<{ token: string; username: string }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) }),
  me: () => request<{ id: number; username: string }>('/auth/me'),
  dashboard: () => request<Dashboard>('/dashboard'), system: () => request<System>('/system'),
  listInstances: () => request<(TunnelInstance & { recovery?: RecoveryState })[]>('/instances'),
  createInstance: (data: unknown) => request<TunnelInstance>('/instances', { method: 'POST', body: JSON.stringify(data) }),
- getInstance: (id: number) => request<{ instance: TunnelInstance; status: string; uptime: number; error?: string; telemetry: Telemetry; recovery?: RecoveryState }>(`/instances/${id}`),
- updateInstance: (id: number, data: unknown) => request<TunnelInstance>(`/instances/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+ getInstance: (id: number) => request<{ instance: TunnelInstance; status: string; uptime: number; error?: string; telemetry: Telemetry; recovery?: RecoveryState }>(`/instances/${id}?compact=1`),
+ updateInstance: (id: number, data: unknown) => request<TunnelInstance>(`/instances/${id}?compact=1`, { method: 'PUT', body: JSON.stringify(data) }),
  deleteInstance: (id: number) => request<{ ok: boolean }>(`/instances/${id}`, { method: 'DELETE' }),
  instanceStart: (id: number) => request<{ status: string }>(`/instances/${id}/start`, { method: 'POST' }),
  instanceStop: (id: number) => request<{ status: string }>(`/instances/${id}/stop`, { method: 'POST' }),

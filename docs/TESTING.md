@@ -54,3 +54,17 @@ See [review assessment and probe compatibility](REVIEW-2026-11-04.md). `integrat
 ## v0.3.10 connection-card layout
 
 The browser suite has 21 scenarios. Two new regressions reproduce mixed Persian/Latin tunnel names and asymmetric carriers in dark desktop (1132 px) and light mobile (320 px) views. They check that role/carrier/interface values match their labels, Latin values retain LTR direction, chips and their text do not overlap, the name does not overlap the status, and the document has no horizontal overflow. Card screenshots are saved in Playwright's test output for visual inspection.
+
+## v0.4.0 smart pool regressions
+
+The browser suite now has 31 scenarios, including permanent default/TXT group separation, staged upload, revision conflicts, draft preservation, deletion confirmation and desktop/mobile pool layouts. API regressions import 260,000 rows across two files into 200,000 unique selected sources, enforce group ownership and capacity, and prove a stalled upload cannot block Start/Stop.
+
+Scheduler regressions cover full 600-second quarantine/retest, reverse-path ambiguity, small/MTU probe alternation, source attribution, adaptive timeout for slow paths, healthy round-robin fairness and restart checkpoints. Raw Linux tests also prove quality probes continue during a 15,000-source outgoing manifest and active-source probes bypass a 3,000-source backlog. They exercise all five carriers, a source-specific drop and atomic/repaired/replay-resistant peer manifests. Fresh single-use hello challenges prevent old confirmations from refreshing the control reference.
+
+```sh
+sudo env SPOOF_SMART_POOL=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
+sudo env SPOOF_SMART_POOL=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_delay.py
+sudo go test -race ./internal/l3
+```
+
+The smart matrix transfers actual inner TCP/UDP payloads on five carriers and asymmetric ICMP/TCP, then restarts just one endpoint and verifies recovery. The adaptive delayed-path test uses 3.4-second RTT. These namespace tests establish local behavior; real provider routing/filtering still requires testing the deployed pair.

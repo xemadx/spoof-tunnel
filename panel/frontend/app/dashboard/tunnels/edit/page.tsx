@@ -2,6 +2,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, type RecoveryState } from "@/lib/api";
+import { PoolManager } from "@/lib/pool-manager";
 import { RecoveryNotice } from "@/lib/recovery";
 import { getBasePath } from "@/lib/basepath";
 import { useToast } from "@/lib/toast";
@@ -73,8 +74,6 @@ function EditContent() {
   const [newTarget, setNewTarget] = useState(443);
   const [newFwdName, setNewFwdName] = useState("");
  const [forwardBusy, setForwardBusy] = useState(false);
-  const [spoofIPs, setSpoofIPs] = useState("");
-  const [savedIPs, setSavedIPs] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [wsState, setWsState] = useState<"off" | "live" | "retry">("off");
   const logEnd = useRef<HTMLDivElement>(null);
@@ -87,7 +86,7 @@ function EditContent() {
       if (full) {
         const snapshot = await api.getInstance(id);
         if (ticket !== requestId.current) return;
-        setConfig(snapshot.instance); setSpoofIPs(snapshot.instance.spoof_ip_list || "");
+        setConfig(snapshot.instance);
         data = snapshot;
       } else {
         data = await api.instanceStatus(id);
@@ -196,6 +195,10 @@ function EditContent() {
  if (viewer && viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 160) viewer.scrollTop = viewer.scrollHeight;
   }, [logs]);
 
+  const poolApplied = useCallback((version: string, patch: Record<string, string | number | boolean> = {}) => {
+    setConfig(current => current ? { ...current, ...patch, updated_at: version } : current);
+  }, []);
+
   const set = (key: string, value: string | number | boolean) =>
     setConfig((c) => (c ? { ...c, [key]: value } : c));
 
@@ -205,9 +208,10 @@ function EditContent() {
     setError("");
     setNotice("");
     try {
-      const saved = await api.updateInstance(id, config);
+      const compact = Object.fromEntries(Object.entries(config).filter(([key]) => !["spoof_ip_list", "peer_spoof_ip_list", "peer_pool_revision"].includes(key)));
+      const saved = await api.updateInstance(id, compact);
  setConfig(saved);
- setSpoofIPs(saved.spoof_ip_list || "");
+
       toast.success("تنظیمات اتصال با موفقیت ذخیره شد.");
       setNotice("تنظیمات ذخیره شد. برای اعمال، تونل را دوباره راه‌اندازی کن.");
     } catch (e) {
@@ -217,23 +221,6 @@ function EditContent() {
     } finally {
       setSaving(false);
     }
-  };
-
-  const saveIPs = async () => {
- if (saving) return; setSaving(true);
-    setError("");
-    try {
-      const r = await api.setInstanceSpoofIPs(id, spoofIPs);
- setConfig(current => current ? { ...current, spoof_ip_list: spoofIPs.trim(), updated_at: r.instance.updated_at } : current);
-      setSavedIPs(true);
-      toast.success(`${r.count} آدرس مبدأ جعلی با موفقیت ذخیره شد.`);
-      setNotice(`${r.count} آدرس ذخیره شد. برای اعمال، تونل را دوباره راه‌اندازی کن.`);
-      setTimeout(() => setSavedIPs(false), 1800);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "ذخیرهٔ فهرست ناموفق بود";
-      setError(msg);
-      toast.error(msg);
-    } finally { setSaving(false); }
   };
 
   const control = async (kind: "start" | "stop" | "restart") => {
@@ -406,15 +393,13 @@ function EditContent() {
             <section className="panel">
               <h2>آدرس‌های مبدأ جعلی (Spoof)</h2>
               <div className="stack">
-                <Field label="مبدأ جعلی این سمت" hint="برای گردش بین چند IP از تب «استخر IPهای اسپوف» استفاده کن.">
+                <Field label="مبدأ تکی جایگزین این سمت" hint="فقط اگر استخر ارسال خالی باشد استفاده می‌شود؛ مبدأهای فعال را در تب «استخر IPهای اسپوف» ویرایش کن.">
                   <input className="input mono" dir="ltr" value={String(config.spoof_ip ?? "")} disabled={locked || saving} onChange={(e) => set("spoof_ip", e.target.value)} />
                 </Field>
                 <Field label="مبدأ جعلی مورد انتظار طرف مقابل">
                   <input className="input mono" dir="ltr" value={String(config.peer_spoof_ip ?? "")} disabled={locked || saving} onChange={(e) => set("peer_spoof_ip", e.target.value)} />
                 </Field>
-                <Field label="فهرست مبدأهای مجاز طرف مقابل" hint="اگر طرف مقابل استخر چند IP دارد، همان آدرس‌ها را اینجا وارد کن؛ هر خط یک IPv4. با خالی‌بودن فهرست فقط مبدأ تکی بالا پذیرفته می‌شود.">
-                  <textarea className="input mono" dir="ltr" rows={4} value={String(config.peer_spoof_ip_list ?? "")} disabled={locked || saving} onChange={(e) => set("peer_spoof_ip_list", e.target.value)} />
-                </Field>
+                <p className="hint">فهرست چندمبدأییِ دریافت را در تب «استخر IPهای اسپوف» با طرف مقابل همگام کن. فهرست‌های بزرگ داخل این فرم بارگذاری نمی‌شوند.</p>
               </div>
             </section>
 
@@ -456,36 +441,7 @@ function EditContent() {
         </>
       )}
 
-      {tab === "ips" && (
-        <section className="panel">
-          <div className="section-head">
-            <div>
-              <h2>استخر آدرس‌های جعلی گردشی (Multi-Spoof)</h2>
-              <span className="hint">
-                تعداد: {spoofIPs.split("\n").filter((l) => l.trim() && !l.trim().startsWith("#")).length} آدرس فعال
-              </span>
-            </div>
-            <button className="btn btn-primary btn-sm" onClick={saveIPs} disabled={locked || saving}>
-              {savedIPs ? "ذخیره شد ✓" : "ذخیرهٔ استخر IP"}
-            </button>
-          </div>
-          <p className="page-intro">
-            هستهٔ تونل L3 در هنگام ارسال بسته‌ها به صورت گردشی (Round-Robin) بدون توقف از این آدرس‌ها به عنوان مبدأ جعلی استفاده می‌کند.
-            فقط یک آدرس IPv4 در هر خط بنویس؛ پیشوند CIDR و بازهٔ خط فاصله اینجا پشتیبانی نمی‌شود و ذخیرهٔ آن‌ها باعث خطا در شروع تونل می‌شود. برای آزمون گستره‌های بزرگ، از صفحهٔ «آزمون اسپوف» استفاده کن که CIDR و بازه را می‌پذیرد.
-          </p>
-          <textarea
-            className="input mono"
-            dir="ltr"
-            rows={14}
-            value={spoofIPs}
-            disabled={locked || saving}
-            onChange={(e) => setSpoofIPs(e.target.value)}
-            placeholder={"198.51.100.10\n203.0.113.5\n203.0.113.6"}
-            spellCheck={false}
-          />
-          {running && <p className="hint" style={{ color: "var(--accent-amber)" }}>تونل در حال حاضر فعال است؛ برای ذخیرهٔ لیست جدید ابتدا اتصال را متوقف کنید.</p>}
-        </section>
-      )}
+      {isTun ? <div hidden={tab !== "ips"}><PoolManager id={id} local={isLocal} running={locked} version={String(config.updated_at ?? "")} active={tab === "ips"} onApplied={poolApplied} /></div> : tab === "ips" && <section className="panel"><h2>استخر هوشمند</h2><p className="hint">این بخش برای موتور TUN لایهٔ ۳ در دسترس است.</p></section>}
 
       {tab === "forwards" && (
         <section className="panel">

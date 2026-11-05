@@ -48,11 +48,15 @@ type TunnelInstance struct {
 	ClientPort  int    `gorm:"default:5001" json:"client_port"`
 
 	// Spoof
-	SpoofIP         string `json:"spoof_ip"`
-	SpoofPort       int    `gorm:"default:443" json:"spoof_port"`
-	PeerSpoofIP     string `json:"peer_spoof_ip"`
-	PeerSpoofIPList string `gorm:"type:text" json:"peer_spoof_ip_list"`
-	SpoofIPList     string `gorm:"type:text" json:"spoof_ip_list"` // inline IPs, newline-separated
+	PeerPoolRevision string `json:"peer_pool_revision"`
+	PoolMode         string `json:"pool_mode"`
+	PoolPPS          int    `json:"pool_pps"`
+	AutoPeerSync     bool   `json:"auto_peer_sync"`
+	SpoofIP          string `json:"spoof_ip"`
+	SpoofPort        int    `gorm:"default:443" json:"spoof_port"`
+	PeerSpoofIP      string `json:"peer_spoof_ip"`
+	PeerSpoofIPList  string `gorm:"type:text" json:"peer_spoof_ip_list"`
+	SpoofIPList      string `gorm:"type:text" json:"spoof_ip_list"` // inline IPs, newline-separated
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -124,6 +128,7 @@ func InitDB(dbPath string) (*gorm.DB, error) {
 		&User{},
 		&TunnelInstance{},
 		&ForwardRule{},
+		&PoolFile{},
 		&TrafficStat{},
 		&Setting{},
 	); err != nil {
@@ -137,6 +142,18 @@ func InitDB(dbPath string) (*gorm.DB, error) {
 
 	// Migrate old ServerConfig → TunnelInstance (one-time)
 	migrateOldConfig(db)
+	if err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS pool_default_per_instance ON pool_files(instance_id) WHERE kind = 'default'").Error; err != nil {
+		return nil, err
+	}
+	var tunnels []TunnelInstance
+	if err := db.Where("engine = ?", "tun").Find(&tunnels).Error; err != nil {
+		return nil, err
+	}
+	for i := range tunnels {
+		if err := EnsureDefaultPool(db, &tunnels[i]); err != nil {
+			return nil, err
+		}
+	}
 
 	return db, nil
 }
@@ -199,4 +216,18 @@ func migrateOldConfig(database *gorm.DB) {
 		PeerSpoofIP:   old.PeerSpoofIP,
 	}
 	database.Create(&instance)
+}
+
+// PoolFile stores compact IPv4 addresses; API responses expose metadata only.
+type PoolFile struct {
+	Kind       string    `gorm:"default:file" json:"kind"`
+	ID         uint      `gorm:"primarykey" json:"id"`
+	InstanceID uint      `gorm:"index;not null" json:"instance_id"`
+	Name       string    `json:"name"`
+	Hash       string    `json:"hash"`
+	Count      int       `json:"count"`
+	Enabled    bool      `json:"enabled"`
+	Position   int       `json:"position"`
+	Data       []byte    `gorm:"type:blob" json:"-"`
+	CreatedAt  time.Time `json:"created_at"`
 }

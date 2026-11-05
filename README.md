@@ -46,10 +46,10 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.3.10**:
+To explicitly install **v0.4.0**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.3.10/install.sh | SPOOF_RELEASE=v0.3.10 bash
+curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.4.0/install.sh | SPOOF_RELEASE=v0.4.0 bash
 ```
 
 Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS`. No Go, Node.js or Rust toolchain is needed on the VPS.
@@ -130,20 +130,20 @@ Lost administrator password? Reset it on the server; use 12–72 UTF-8 bytes. Th
 /opt/spoof-panel/spoof-panel --setup --setup-pass 'YOUR_NEW_PASSWORD'
 ```
 
-Rotating local spoof sources require the **same list in the other end's allowed-peer-source list**. Saving one server cannot update a separately managed server automatically.
+Rotating local spoof sources require the **same selected set in the other end's allowed-peer-source list**. Updated engines can exchange authenticated source manifests using the pool tab; enable automatic sync on both ends or request it explicitly. Existing connections retain legacy rotation until changed. See [Smart pools](docs/SMART-POOLS.md) and [راهنمای فارسی استخر هوشمند](docs/SMART-POOLS.fa.md).
 
 ## Build and verification
 
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.3.10 bash scripts/build.sh
+SPOOF_VERSION=v0.4.0 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
 The build exports the frontend, embeds it in `spoof-panel`, builds `spoof-l3` and packages both with the installer and documentation. GitHub Actions validates the source before creating release packages for both architectures.
 
-Validation includes **25 ordered carrier combinations**, **five rotating-source cases**, delayed heartbeats above three seconds RTT, and **one Iran + three simultaneous foreign peers on all five carriers** with concurrent TCP/UDP probes and isolated stop/restart. **21 browser scenarios** cover panel behavior and locally served Persian fonts; Go race tests and real HTTP/SQLite tests cover the backend. Reproduce them with [Testing](docs/TESTING.md). See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md) and the [fix report](docs/FIXES-2026-11-01.md).
+Validation includes **25 ordered carrier combinations**, **five rotating-source cases**, delayed heartbeats above three seconds RTT, and **one Iran + three simultaneous foreign peers on all five carriers** with concurrent TCP/UDP probes and isolated stop/restart. **23 browser scenarios** cover panel behavior and locally served Persian fonts; Go race tests and real HTTP/SQLite tests cover the backend. Reproduce them with [Testing](docs/TESTING.md). See [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md) and the [fix report](docs/FIXES-2026-11-01.md).
 
 ## Limits and attribution
 
@@ -168,9 +168,15 @@ The receiver acknowledges startup only after its raw socket is ready. ICMP retai
 
 Forwarders wait up to five seconds for their assigned TUN to be up, and Stop cancels that wait. There is still no fallback route. Running tunnel edits are rejected with HTTP 409; saving a stopped/error tunnel cancels queued recovery and requires explicit Start. A mismatched PSK/allowlist normally leaves a live core without a working peer; restarting cannot repair it.
 
-The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.3.10` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
+The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.4.0` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
 
 
 ### v0.3.10 connection labels
 
 Connection cards separate the role, send carrier, receive carrier and TUN interface into labelled, wrapping chips. Mixed Persian/Latin names use bidirectional isolation. Long names and narrow screens retain readable labels without overlap. Browser regressions check dark desktop and light mobile layouts, including a 320-pixel viewport.
+
+### Smart source pools in v0.4.0
+
+Pasted IPv4 addresses stay in a permanent **default** group; each TXT upload becomes an independent named group. Select one, several or all groups, and set their priority. Uploading stages a file without activating it.
+
+Named TXT files, selected-set deduplication, quality-based dispatch, healthy-source round-robin and failure-based priority switching are available for TUN links. Authenticated per-source probes include small and MTU-sized frames; reference-qualified failures cause a 600-second quarantine followed by re-verification. A reverse-path outage is not treated as evidence that every source failed. The UI shows progressive discovery, quality, quarantine countdowns and authenticated peer-manifest synchronization. Upgrade both engines before enabling smart policies; legacy tunnels keep their existing behavior. [English operation guide](docs/SMART-POOLS.md) · [راهنمای فارسی](docs/SMART-POOLS.fa.md).

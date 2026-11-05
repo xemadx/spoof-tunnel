@@ -3,8 +3,12 @@ const prefix = '/reviewprefix';
 const runtimeErrors = new WeakMap<Page, string[]>();
 test.beforeEach(({ page }) => { const errors: string[] = []; runtimeErrors.set(page, errors); page.on('pageerror', error => errors.push(error.message)); });
 test.afterEach(({ page }) => { expect(runtimeErrors.get(page)).toEqual([]); });
-async function mock(page: Page) {
- let instance = { id: 1, name: 'Review tunnel', mode: 'local', engine: 'tun', status: 'stopped', uptime: 30, send_transport: 'icmp', recv_transport: 'icmp', tun_interface: 'spcheck', tun_address: '10.77.0.1/30', tun_peer: '10.77.0.2', remote_addr: '192.0.2.2', spoof_ip: '198.51.100.1', peer_spoof_ip: '198.51.100.2', spoof_ip_list: '198.51.100.1', remote_port: 8090, recv_port: 5001, enabled: true };
+async function mock(page: Page, running = false) {
+ let instance = { updated_at: '2026-11-05T12:00:00Z', id: 1, name: 'Review tunnel', mode: 'local', engine: 'tun', status: 'stopped', uptime: 30, send_transport: 'icmp', recv_transport: 'icmp', tun_interface: 'spcheck', tun_address: '10.77.0.1/30', tun_peer: '10.77.0.2', remote_addr: '192.0.2.2', spoof_ip: '198.51.100.1', peer_spoof_ip: '198.51.100.2', spoof_ip_list: '198.51.100.1', remote_port: 8090, recv_port: 5001, enabled: true };
+ let poolFiles = [{ id: 1, kind: 'default', name: 'پیش‌فرض', count: 1, enabled: true, position: 0, hash: 'first' }, { id: 2, kind: 'file', name: 'فارس.txt', count: 1, enabled: false, position: 1, hash: 'second' }];
+ let poolMode = running ? 'adaptive' : 'legacy';
+ let manualContent = '198.51.100.1';
+ let poolVersion = instance.updated_at;
  const writes: { path: string; data: Record<string, unknown> }[] = [];
  let statusCalls = 0;
  await page.addInitScript(() => { localStorage.setItem('token', 'review'); if (!localStorage.getItem('spoof-theme')) localStorage.setItem('spoof-theme', 'light'); });
@@ -17,17 +21,39 @@ async function mock(page: Page) {
   else if (path === '/dashboard') data = { total: 2, running_count: 0, stopped_count: 2, error_count: 0, instances: [instance, { ...instance, id: 2 }].map((i, index) => ({ ...i, telemetry: { peer_connected: false, tx_bytes: index ? 8192 : 1024, rx_bytes: 2048, drops: 0, last_peer: 0 } })) };
   else if (path === '/instances/1') {
    if (request.method() === 'PUT') instance = { ...instance, ...request.postDataJSON() };
-   data = request.method() === 'PUT' ? instance : { instance, status: 'stopped', uptime: 0 };
+   data = request.method() === 'PUT' ? instance : { instance, status: running ? 'running' : 'stopped', uptime: 0 };
+  } else if (path === '/instances/1/pools') {
+   data = { files: poolFiles, mode: poolMode, probe_pps: 25, auto_peer_sync: poolMode !== 'legacy', total: 1, peer_count: 1, legacy_content: false, updated_at: poolVersion };
+  } else if (path === '/instances/1/pools/default') {
+   if (request.method() === 'POST') {
+    const matches = request.postDataBuffer()?.toString('utf8').match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? [];
+    manualContent = Array.from(new Set(matches)).join('\n');
+    poolFiles[0].count = manualContent ? manualContent.split('\n').length : 0;
+    if (poolFiles[0].enabled) instance.spoof_ip_list = manualContent;
+   }
+   data = { content: manualContent, count: poolFiles[0].count, updated_at: poolVersion };
+  } else if (path === '/instances/1/pools/settings') {
+   const body = request.postDataJSON(); poolMode = body.mode;poolVersion='2026-11-05T12:00:01Z';instance.updated_at=poolVersion;
+   poolFiles = poolFiles.map(f => ({ ...f, enabled: body.ids.includes(f.id) }));
+   instance.spoof_ip_list = body.ids.includes(2) ? '198.51.100.22' : '198.51.100.1';
+   data = { ok: true, total: 1, updated_at: '2026-11-05T12:00:01Z' };
+  } else if (path === '/instances/1/pools/state') {
+   data = { available: true, runtime: { peer_ready: true, control_fresh: true, our_sources_accepted: true, peer: { supported: true, status: 'synced', count: 12919, progress: 100, revision: 'review-peer' }, pool: { mode: 'adaptive', total: 122437, healthy: 512, testing: 3, quarantined: 2, unknown: 121920, active: '45.157.244.1', offset: 0, items: [{ ip: '45.157.244.1', state: 'healthy', rtt_ms: 24, loss_pct: 0, probes: 10, replies: 10 }, { ip: '45.157.244.2', state: 'quarantined', rtt_ms: 0, loss_pct: 48, probes: 3, replies: 0, retry_at: Math.floor(Date.now()/1000)+600 }] } } };
+  } else if (path === '/instances/1/pools/upload') {
+   data = { id: 3, kind: 'file', name: 'جدید.txt', count: 3, enabled: false, position: 2, hash: 'third' };
+   poolFiles.push(data as typeof poolFiles[number]);
+  } else if (path.startsWith('/instances/1/pools/') && request.method() === 'DELETE') { const id = Number(path.split('/').at(-1)); poolFiles = poolFiles.filter(f => f.id !== id); data = { ok: true };
+  } else if (path === '/instances/1/pools/sync') { data = { ok: true };
   } else if (path === '/instances/1/spoof-ips') {
    if (request.method() === 'PUT') { instance.spoof_ip_list = request.postDataJSON().content; data = { ok: true, count: 1, instance }; }
    else data = { content: instance.spoof_ip_list, count: 1 };
-  } else if (path.endsWith('/status') && path !== '/tester/status') data = { status: 'stopped', uptime: 0 };
+  } else if (path.endsWith('/status') && path !== '/tester/status') data = { status: running ? 'running' : 'stopped', uptime: 0 };
   else if (path === '/tester/status') { statusCalls++; data = { status: 'running', mode: 'receiver', total_ips: 1, progress: 10, recv_count: 0, results: [] }; }
   else if (path === '/auth/login') { status = 401; data = { error: 'invalid credentials' }; }
   else if (path.endsWith('/forwards')) data = [];
   await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
  });
- return { writes, statusCalls: () => statusCalls };
+ return { writes, statusCalls: () => statusCalls, pool: () => instance.spoof_ip_list };
 }
 test('connection card exposes real endpoint and tunnel addresses', async ({ page }) => {
  await mock(page); await page.goto(prefix + '/dashboard/tunnels/');
@@ -47,16 +73,21 @@ test('tester restores an active server-side job after reload', async ({ page }) 
  expect(state.statusCalls()).toBeGreaterThan(0);
  await page.reload(); await expect(page.getByRole('button', { name: 'توقف آزمون' })).toBeVisible();
 });
-test('saving general settings retains a newly saved spoof pool', async ({ page }) => {
+test('general settings cannot erase a separately applied named pool', async ({ page }) => {
  const state = await mock(page); await page.goto(prefix + '/dashboard/tunnels/edit/?id=1');
  await page.getByRole('tab', { name: 'استخر IPهای اسپوف' }).click();
- await page.locator('textarea').fill('198.51.100.22');
- await page.getByRole('button', { name: 'ذخیرهٔ استخر IP' }).click();
- await expect(page.getByRole('button', { name: 'ذخیره شد ✓' })).toBeVisible();
+ await page.getByRole('checkbox', { name: /پیش‌فرض/ }).uncheck();
+ await page.getByRole('checkbox', { name: /فارس.txt/ }).check();
+ await page.getByRole('radio', { name: /انتخاب بر اساس کیفیت/ }).check();
+ await page.getByRole('button', { name: 'اعمال انتخاب و روش ارسال' }).click();
+ await expect(page.getByRole('status')).toContainText('مبدأ یکتا ذخیره شد');
  await page.getByRole('tab', { name: 'تنظیمات اتصال', exact: true }).click();
  await page.getByRole('button', { name: 'ذخیرهٔ تنظیمات اتصال' }).click();
- await expect.poll(() => state.writes.find(w => w.path === '/instances/1')?.data.spoof_ip_list).toBe('198.51.100.22');
+ await expect.poll(() => state.writes.some(w => w.path === '/instances/1')).toBeTruthy();
+ expect(state.writes.find(w => w.path === '/instances/1')?.data).not.toHaveProperty('spoof_ip_list');
+ expect(state.pool()).toBe('198.51.100.22');
 });
+
 test('mobile navigation closes by its trigger, close button and Escape', async ({ page }) => {
  await mock(page); await page.setViewportSize({ width: 390, height: 844 }); await page.goto(prefix + '/dashboard/');
  const trigger = page.getByRole('button', { name: 'باز و بستن منو' });
@@ -284,3 +315,107 @@ for (const scenario of [
   await card.screenshot({path:testInfo.outputPath('connection-card.png')});
  });
 }
+
+test('smart pool shows bounded quality rows and locks active selection', async ({ page }) => {
+ await mock(page, true); await page.goto(prefix + '/dashboard/tunnels/edit/?id=1');
+ await page.getByRole('tab', { name: 'استخر IPهای اسپوف' }).click();
+ await expect(page.getByRole('heading', { name: 'استخر مبدأهای اسپوف', exact: true })).toBeVisible();
+ await expect(page.getByRole('checkbox', { name: /فارس.txt/ })).toBeDisabled();
+ await expect(page.locator('.pool-table tbody tr')).toHaveCount(2);
+ await expect(page.locator('.pool-table')).toContainText('45.157.244.1');
+ await expect(page.locator('.pool-state.quarantined')).toContainText('قرنطینه');
+ await expect(page.getByRole('button', { name: 'دریافت از طرف مقابل' })).toBeEnabled();
+ await page.getByRole('button', { name: 'دریافت از طرف مقابل' }).click();
+ await expect(page.getByRole('status')).toContainText('درخواست دریافت فهرست');
+});
+test('pool file import keeps unsaved selection and renders correctly on mobile', async ({ page }) => {
+ await page.setViewportSize({ width: 390, height: 844 }); await mock(page);
+ await page.goto(prefix + '/dashboard/tunnels/edit/?id=1');
+ await page.getByRole('tab', { name: 'استخر IPهای اسپوف' }).click();
+ await page.getByRole('checkbox', { name: /فارس.txt/ }).check();
+ await page.locator('.pool-file-input').setInputFiles({ name: 'جدید.txt', mimeType: 'text/plain', buffer: Buffer.from('192.0.2.1\n192.0.2.2\n192.0.2.3\n') });
+ await expect(page.getByRole('checkbox', { name: /جدید.txt/ })).toBeVisible();
+ await expect(page.getByRole('checkbox', { name: /فارس.txt/ })).toBeChecked();
+ expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+});
+
+test('manual IPs belong to the default group and TXT groups stay independent', async ({ page }) => {
+ await mock(page); await page.goto(prefix + '/dashboard/tunnels/edit/?id=1');
+ await page.getByRole('tab', { name: 'استخر IPهای اسپوف' }).click();
+ await page.getByText('ویرایش آی‌پی‌های دستیِ گروه پیش‌فرض', { exact: true }).click();
+ const editor = page.getByRole('textbox', { name: 'آی‌پی‌های گروه پیش‌فرض', exact: true });
+ await expect(editor).toHaveValue('198.51.100.1');
+ await editor.fill('198.51.100.9\n198.51.100.10\n198.51.100.9');
+ await page.getByRole('button', { name: 'ذخیرهٔ گروه پیش‌فرض', exact: true }).click();
+ await expect(editor).toHaveValue('198.51.100.9\n198.51.100.10');
+ await expect(page.getByRole('checkbox', { name: /پیش‌فرض/ })).toBeChecked();
+ await expect(page.getByRole('checkbox', { name: /فارس.txt/ })).not.toBeChecked();
+ expect(await page.locator('.pool-file-row').filter({ hasText: 'پیش‌فرض' }).getByRole('button', { name: 'حذف', exact: true }).count()).toBe(0);
+});
+test('pool drafts survive tab changes and applying pools retains other form drafts', async ({ page }) => {
+ await mock(page); await page.goto(prefix + '/dashboard/tunnels/edit/?id=1');
+ await page.getByLabel('نام اتصال', { exact: true }).fill('نام ذخیره‌نشده');
+ await page.getByRole('tab', { name: 'استخر IPهای اسپوف' }).click();
+ await page.getByRole('checkbox', { name: /فارس.txt/ }).check();
+ await page.getByRole('tab', { name: 'تنظیمات اتصال', exact: true }).click();
+ await page.getByRole('tab', { name: 'استخر IPهای اسپوف' }).click();
+ await expect(page.getByRole('checkbox', { name: /فارس.txt/ })).toBeChecked();
+ await page.getByRole('radio', { name: /انتخاب بر اساس کیفیت/ }).check();
+ await page.getByRole('button', { name: 'اعمال انتخاب و روش ارسال' }).click();
+ await expect(page.getByRole('status')).toContainText('مبدأ یکتا ذخیره شد');
+ await page.getByRole('tab', { name: 'تنظیمات اتصال', exact: true }).click();
+ await expect(page.getByLabel('نام اتصال', { exact: true })).toHaveValue('نام ذخیره‌نشده');
+});
+
+test('an external configuration revision blocks overwriting pool settings', async ({ page }) => {
+ await mock(page);
+ await page.route('**/api/instances/1/pools', route => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ files: [{ id: 1, kind: 'default', name: 'پیش‌فرض', count: 1, enabled: true, position: 0, hash: 'one' }], mode: 'legacy', probe_pps: 25, auto_peer_sync: false, total: 1, peer_count: 1, legacy_content: false, updated_at: '2026-11-05T13:00:00Z' }) }));
+ await page.goto(prefix + '/dashboard/tunnels/edit/?id=1'); await page.getByRole('tab', { name: 'استخر IPهای اسپوف' }).click();
+ await expect(page.locator('.pool-feedback[role=alert]')).toContainText('در جای دیگری تغییر کرده');
+ await page.getByRole('radio', { name: /انتخاب بر اساس کیفیت/ }).check();
+ await expect(page.getByRole('button', { name: 'اعمال انتخاب و روش ارسال' })).toBeDisabled();
+});
+test('deleting an inactive TXT group requires its named confirmation and supports Escape', async ({ page }) => {
+ await mock(page); await page.goto(prefix + '/dashboard/tunnels/edit/?id=1'); await page.getByRole('tab', { name: 'استخر IPهای اسپوف' }).click();
+ await page.locator('.pool-file-row').filter({ hasText: 'فارس.txt' }).getByRole('button', { name: 'حذف', exact: true }).click();
+ await expect(page.getByRole('dialog', { name: 'حذف گروه TXT' })).toContainText('فارس.txt');
+ await page.keyboard.press('Escape'); await expect(page.getByRole('dialog')).toBeHidden();
+ await expect(page.getByRole('checkbox', { name: /فارس.txt/ })).toBeVisible();
+ await page.locator('.pool-file-row').filter({ hasText: 'فارس.txt' }).getByRole('button', { name: 'حذف', exact: true }).click();
+ await page.getByRole('button', { name: 'حذف گروه', exact: true }).click();
+ await expect(page.getByRole('checkbox', { name: /فارس.txt/ })).toHaveCount(0);
+ await expect(page.getByRole('checkbox', { name: /پیش‌فرض/ })).toBeVisible();
+});
+
+for (const scenario of [{ name:'desktop dark', width:1440, height:1000, theme:'dark' }, { name:'mobile light', width:390, height:844, theme:'light' }]) {
+ test(`pool groups layout: ${scenario.name}`, async({page},testInfo)=>{
+  await page.setViewportSize({width:scenario.width,height:scenario.height});
+  await mock(page);
+  await page.addInitScript(theme=>localStorage.setItem('spoof-theme',theme),scenario.theme);
+  await page.goto(prefix+'/dashboard/tunnels/edit/?id=1');
+  await page.getByRole('tab',{name:'استخر IPهای اسپوف'}).click();
+  await expect(page.getByRole('heading',{name:'گروه‌های استخر این سرور'})).toBeVisible();
+  await expect(page.getByRole('checkbox',{name:/پیش‌فرض/})).toBeChecked();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:testInfo.outputPath('pool-groups.png'),fullPage:true});
+ });
+}
+
+test('pool explains waiting for the other engine to finish readiness checks', async({page})=>{
+ await mock(page,true);
+ await page.route('**/api/instances/1/pools/state**',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({available:true,runtime:{peer_ready:false,control_fresh:true,our_sources_accepted:true,peer:{supported:true,status:'synced',count:1,progress:100},pool:{mode:'adaptive',total:1,healthy:1,testing:0,quarantined:0,unknown:0,offset:0,items:[]}}})}));
+ await page.goto(prefix+'/dashboard/tunnels/edit/?id=1');
+ await page.getByRole('tab',{name:'استخر IPهای اسپوف'}).click();
+ await expect(page.getByText('طرف مقابل هنوز آمادهٔ ارسال داده نیست؛ منتظر تکمیل تأیید مبدأ و همگام‌سازی آن سمت هستیم.')).toBeVisible();
+});
+
+test('retrying after a failed TXT upload keeps the pending group selection',async({page})=>{
+ await mock(page);
+ await page.route('**/api/instances/1/pools/upload',route=>route.fulfill({status:409,contentType:'application/json',body:JSON.stringify({error:'this address file is already imported'})}));
+ await page.goto(prefix+'/dashboard/tunnels/edit/?id=1');await page.getByRole('tab',{name:'استخر IPهای اسپوف'}).click();
+ await page.getByRole('checkbox',{name:/فارس.txt/}).check();
+ await page.locator('.pool-file-input').setInputFiles({name:'duplicate.txt',mimeType:'text/plain',buffer:Buffer.from('192.0.2.1')});
+ await page.getByRole('button',{name:'دریافت دوباره',exact:true}).click();
+ await expect(page.getByRole('checkbox',{name:/فارس.txt/})).toBeChecked();
+ await expect(page.getByText('تغییرات هنوز اعمال نشده‌اند.')).toBeVisible();
+});

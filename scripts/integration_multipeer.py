@@ -53,7 +53,8 @@ def main():
             assert response[0]==expected,(method,path,response)
             return response[1]
         def spawn(namespace,args):
-            process=subprocess.Popen(['ip','netns','exec',namespace,*args],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+            with (directory/f'process-{len(PROCESSES)}.log').open('w') as output:
+                process=subprocess.Popen(['ip','netns','exec',namespace,*args],stdout=output,stderr=output)
             PROCESSES.append(process);return process
         try:
             for name in NAMES:run('ip','netns','add',name)
@@ -83,18 +84,18 @@ def main():
                     result=api('POST','/pairs',pair);ident=result['saved']['id'];ids.append(ident)
                     api('POST','/pairs',pair,expected=400)
                     remote=result['remote'];keys.add(remote['psk']);interfaces.add(remote['tun_interface'])
-                    config=dict(role='remote',local_ip=remote['local_ip'],peer_ip=remote['client_ip'],spoof_source=remote['spoof_ip'],peer_spoof=remote['peer_spoof_ip'],send=remote['send_transport'],receive=remote['recv_transport'],send_port=remote['client_port'],receive_port=remote['listen_port'],interface=remote['tun_interface'],address=remote['tun_address'],peer_address=remote['tun_peer'],mtu=remote['tun_mtu'],psk=remote['psk'])
+                    config=dict(role='remote',local_ip=remote['local_ip'],peer_ip=remote['client_ip'],spoof_source=remote['spoof_ip'],peer_spoof=remote['peer_spoof_ip'],send=remote['send_transport'],receive=remote['recv_transport'],send_port=remote['client_port'],receive_port=remote['listen_port'],interface=remote['tun_interface'],address=remote['tun_address'],peer_address=remote['tun_peer'],mtu=remote['tun_mtu'],psk=remote['psk'],pool_policy=dict(mode=remote['pool_mode'],probe_pps=remote['pool_pps']),auto_peer_sync=remote['auto_peer_sync'],control_socket=str(directory/f'remote-{index}.sock'))
                     path=directory/f'{carrier}-{index}.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
                     cores.append(spawn(NAMES[index+1],[CORE,'--config',str(path)]))
                     api('POST',f'/instances/{ident}/start',{})
                     api('POST',f'/instances/{ident}/forwards',dict(listen_port=11001+index,target_port=19001,protocol='tcp',enabled=True),expected=201)
                 assert len(keys)==3 and len(interfaces)==3
                 api('POST',f'/instances/{ids[1]}/forwards',dict(listen_port=11001,target_port=19001,enabled=True),expected=400)
-                for attempt in range(40):
+                for attempt in range(100):
                     statuses=[api('GET',f'/instances/{ident}/status') for ident in ids]
                     if all(status['telemetry']['peer_connected'] for status in statuses):break
                     time.sleep(.2)
-                else:raise AssertionError('all peers were not authenticated')
+                else:raise AssertionError(('all peers were not authenticated', statuses))
                 # A live edit must be rejected without stopping any core.
                 live=api('GET',f'/instances/{ids[0]}')['instance']
                 api('PUT',f'/instances/{ids[0]}',live,expected=409)
@@ -126,7 +127,7 @@ def main():
                 probe(1);probe(2)  # Stopping one tunnel must leave its neighbours operational.
                 assert not api('GET',f'/instances/{ids[0]}/forwards')[0]['listening']
                 api('POST',f'/instances/{ids[0]}/start',{})
-                for attempt in range(40):
+                for attempt in range(100):
                     if api('GET',f'/instances/{ids[0]}/status')['telemetry']['peer_connected']:break
                     time.sleep(.2)
                 else:raise AssertionError('restarted peer did not authenticate')
@@ -136,6 +137,19 @@ def main():
                 print(f'PASS simultaneous {carrier}: one Iran IP, three peers, shared carrier ports AND spoof source, separate TUN networks, concurrent service replies and forward ports; duplicate subnet/entry rejected; crash recovery and manual stop/restart isolated',flush=True)
                 for ident in ids:api('DELETE',f'/instances/{ident}')
                 for process in cores:process.terminate();process.wait(timeout=5)
+        except Exception:
+            for path in directory.glob('process-*.log'):
+                print('DIAGNOSTIC',path.name,path.read_text()[-6000:],flush=True)
+            for path in directory.glob('remote-*.sock'):
+                try:
+                    import socket
+                    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as ipc:
+                        ipc.settimeout(3);ipc.connect(str(path));ipc.sendall(b'{"op":"status"}\n');print('REMOTE POOL',path.name,ipc.recv(16384).decode(),flush=True)
+                except Exception as diagnostic: print('REMOTE IPC ERROR',diagnostic,flush=True)
+            for ident in locals().get('ids',[]):
+                try: print('STATUS',ident,api('GET',f'/instances/{ident}/status'),api('GET',f'/instances/{ident}/pools/state'),flush=True)
+                except Exception as diagnostic: print('DIAGNOSTIC ERROR',diagnostic,flush=True)
+            raise
         finally:
             for process in reversed(PROCESSES):
                 if process.poll() is None:

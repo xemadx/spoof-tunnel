@@ -40,7 +40,11 @@ func NewServer(database *gorm.DB, mgr *manager.Manager, webPath string, version 
 	r.Use(gin.Recovery())
 
 	r.Use(func(c *gin.Context) {
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20)
+		limit := int64(2 << 20)
+		if c.Request.Method == "POST" && (strings.HasSuffix(c.Request.URL.Path, "/pools/upload") || strings.HasSuffix(c.Request.URL.Path, "/pools/default")) {
+			limit = 12 << 20
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, limit)
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("Referrer-Policy", "no-referrer")
 		c.Header("X-Frame-Options", "DENY")
@@ -106,6 +110,17 @@ func (s *Server) setupRoutes() {
 			protected.GET("/instances/:id/logs", s.handleInstanceLogs)
 
 			// Instance Spoof IPs
+			protected.GET("/instances/:id/pools", s.handlePoolList)
+			protected.GET("/instances/:id/pools/default", s.handleDefaultPoolGet)
+			protected.POST("/instances/:id/pools/default", s.handleDefaultPoolSave)
+			protected.POST("/instances/:id/pools/upload", s.handlePoolUpload)
+			protected.POST("/instances/:id/pools/migrate", s.handlePoolMigrate)
+			protected.PUT("/instances/:id/pools/settings", s.handlePoolSettings)
+			protected.GET("/instances/:id/pools/state", s.handlePoolState)
+			protected.POST("/instances/:id/pools/sync", s.handlePoolSync)
+			protected.POST("/instances/:id/pools/sync/cancel", s.handlePoolSyncCancel)
+			protected.DELETE("/instances/:id/pools/:fileID", s.handlePoolDelete)
+			protected.GET("/instances/:id/pools/:fileID/download", s.handlePoolDownload)
 			protected.GET("/instances/:id/spoof-ips", s.handleGetInstanceSpoofIPs)
 			protected.PUT("/instances/:id/spoof-ips", s.handleSetInstanceSpoofIPs)
 

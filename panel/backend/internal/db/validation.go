@@ -116,6 +116,8 @@ func (c TunnelInstance) L3Config() l3.Config {
 		}
 	}
 	return l3.Config{
+		PoolPolicy:   l3.PoolPolicy{Mode: c.PoolMode, ProbePPS: c.PoolPPS},
+		AutoPeerSync: c.AutoPeerSync,
 		Role:         c.Mode,
 		LocalIP:      c.LocalIP,
 		PeerIP:       peer,
@@ -171,7 +173,7 @@ func SaveTunnel(database *gorm.DB, c *TunnelInstance, create bool) error {
 			prefix, _ := netip.ParsePrefix(c.TunAddress)
 			prefix = prefix.Masked()
 			var all []TunnelInstance
-			if err := tx.Where("id <> ? AND engine = ?", c.ID, "tun").Find(&all).Error; err != nil {
+			if err := tx.Omit("spoof_ip_list", "peer_spoof_ip_list").Where("id <> ? AND engine = ?", c.ID, "tun").Find(&all).Error; err != nil {
 				return err
 			}
 			for _, other := range all {
@@ -202,7 +204,10 @@ func SaveTunnel(database *gorm.DB, c *TunnelInstance, create bool) error {
 			}
 		}
 		if create {
-			return tx.Create(c).Error
+			if err := tx.Create(c).Error; err != nil {
+				return err
+			}
+			return EnsureDefaultPool(tx, c)
 		}
 		return tx.Save(c).Error
 	})

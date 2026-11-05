@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"gorm.io/gorm"
 	"io"
 	"net"
 	"net/http"
@@ -99,7 +100,7 @@ func (s *Server) handleMe(c *gin.Context) {
 
 func (s *Server) handleDashboard(c *gin.Context) {
 	var instances []db.TunnelInstance
-	s.db.Find(&instances)
+	s.db.Omit("spoof_ip_list", "peer_spoof_ip_list").Find(&instances)
 
 	type instanceInfo struct {
 		Recovery  manager.RecoveryState `json:"recovery"`
@@ -117,6 +118,8 @@ func (s *Server) handleDashboard(c *gin.Context) {
 	var running, stopped, errored int
 
 	for _, inst := range instances {
+		inst.SpoofIPList = ""
+		inst.PeerSpoofIPList = ""
 		status, errMsg := s.manager.InstanceStatus(inst.ID)
 		uptime := s.manager.InstanceUptime(inst.ID)
 		items = append(items, instanceInfo{
@@ -171,7 +174,7 @@ func (s *Server) handleSystem(c *gin.Context) {
 
 func (s *Server) handleListInstances(c *gin.Context) {
 	var instances []db.TunnelInstance
-	s.db.Order("id asc").Find(&instances)
+	s.db.Omit("spoof_ip_list", "peer_spoof_ip_list").Order("id asc").Find(&instances)
 
 	type instanceWithStatus struct {
 		db.TunnelInstance
@@ -183,6 +186,8 @@ func (s *Server) handleListInstances(c *gin.Context) {
 
 	var result []instanceWithStatus
 	for _, inst := range instances {
+		inst.SpoofIPList = ""
+		inst.PeerSpoofIPList = ""
 		status, errMsg := s.manager.InstanceStatus(inst.ID)
 		uptime := s.manager.InstanceUptime(inst.ID)
 		result = append(result, instanceWithStatus{
@@ -265,11 +270,19 @@ func (s *Server) handleGetInstance(c *gin.Context) {
 	}
 
 	var inst db.TunnelInstance
-	if err := s.db.First(&inst, id).Error; err != nil {
+	query := s.db
+	if c.Query("compact") == "1" {
+		query = query.Omit("spoof_ip_list", "peer_spoof_ip_list")
+	}
+	if err := query.First(&inst, id).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "instance not found"})
 		return
 	}
 
+	if c.Query("compact") == "1" {
+		inst.SpoofIPList = ""
+		inst.PeerSpoofIPList = ""
+	}
 	status, errMsg := s.manager.InstanceStatus(id)
 	uptime := s.manager.InstanceUptime(id)
 
@@ -303,6 +316,7 @@ func (s *Server) handleUpdateInstance(c *gin.Context) {
 		return
 	}
 	version := existing.UpdatedAt
+	oldPool := existing.SpoofIPList
 	if err := c.ShouldBindJSON(&existing); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -312,6 +326,15 @@ func (s *Server) handleUpdateInstance(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "Configuration changed on the server; reload before saving"})
 		return
 	}
+	if oldPool != existing.SpoofIPList {
+		var managed int64
+		s.db.Model(&db.PoolFile{}).Where("instance_id = ?", id).Count(&managed)
+		if managed > 0 {
+			c.JSON(409, gin.H{"error": "this pool is managed by named files; use pool selection"})
+			return
+		}
+	}
+
 	existing.ID = id
 	if err := existing.Validate(); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
@@ -324,6 +347,10 @@ func (s *Server) handleUpdateInstance(c *gin.Context) {
 	if err := db.SaveTunnel(s.db, &existing, false); err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
+	}
+	if c.Query("compact") == "1" {
+		existing.SpoofIPList = ""
+		existing.PeerSpoofIPList = ""
 	}
 	c.JSON(http.StatusOK, existing)
 }
@@ -339,6 +366,7 @@ func (s *Server) handleDeleteInstance(c *gin.Context) {
 	// Stop if running
 	s.manager.RemoveInstance(id)
 	_ = s.db.Where("instance_id = ?", id).Delete(&db.ForwardRule{}).Error
+	_ = s.db.Where("instance_id = ?", id).Delete(&db.PoolFile{}).Error
 
 	if err := s.db.Delete(&db.TunnelInstance{}, id).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -497,6 +525,13 @@ func (s *Server) handleSetInstanceSpoofIPs(c *gin.Context) {
 		return
 	}
 
+	var managed int64
+	s.db.Model(&db.PoolFile{}).Where("instance_id = ? AND kind <> ? AND enabled = ?", id, "default", true).Count(&managed)
+	if managed > 0 {
+		c.JSON(409, gin.H{"error": "this pool is managed by named files; use pool selection"})
+		return
+	}
+
 	var req struct {
 		Content string `json:"content"`
 	}
@@ -539,7 +574,32 @@ func (s *Server) handleSetInstanceSpoofIPs(c *gin.Context) {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-	if err := db.SaveTunnel(s.db, &inst, false); err != nil {
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
+		if err := db.SaveTunnel(tx, &inst, false); err != nil {
+			return err
+		}
+		if inst.Engine == "tun" {
+			content := inst.SpoofIPList
+			if strings.TrimSpace(content) == "" {
+				content = inst.SpoofIP
+			}
+			ips, err := l3.ParseSourceText(strings.NewReader(content))
+			if err != nil {
+				return err
+			}
+			var row db.PoolFile
+			if err = tx.Where("instance_id = ? AND kind = ?", inst.ID, "default").First(&row).Error; err != nil {
+				return err
+			}
+			value := poolFile("پیش‌فرض", inst.ID, ips)
+			row.Data = value.Data
+			row.Hash = value.Hash
+			row.Count = len(ips)
+			row.Enabled = true
+			return tx.Save(&row).Error
+		}
+		return nil
+	}); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
