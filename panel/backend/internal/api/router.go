@@ -2,6 +2,7 @@ package api
 
 import (
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/updater"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 
 // Server is the API server
 type Server struct {
+	updates    *updater.Updater
 	db         *gorm.DB
 	manager    *manager.Manager
 	tester     *tester.Runner
@@ -53,6 +55,7 @@ func NewServer(database *gorm.DB, mgr *manager.Manager, webPath string, version 
 
 	s := &Server{
 		mutationMu: mgr.MutationGuard(),
+		updates:    updater.New(version, mgr.DataDir()),
 		db:         database,
 		manager:    mgr,
 		tester:     tester.NewRunner(),
@@ -83,6 +86,7 @@ func (s *Server) setupRoutes() {
 		api.POST("/auth/login", s.handleLogin)
 		api.POST("/auth/setup", s.handleSetup)
 		api.GET("/auth/check", s.handleAuthCheck)
+		api.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"version": s.version}) })
 
 		// Protected routes
 		protected := api.Group("")
@@ -139,6 +143,9 @@ func (s *Server) setupRoutes() {
 
 			// Settings
 			protected.PUT("/settings/password", s.handleChangePassword)
+			protected.GET("/updates", s.handleUpdateStatus)
+			protected.POST("/updates/check", s.handleUpdateCheck)
+			protected.POST("/updates/install", s.handleUpdateInstall)
 		}
 	}
 }

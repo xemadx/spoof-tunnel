@@ -539,3 +539,10 @@ select.input { appearance: none; cursor: pointer; }
 @media(max-width:760px){.pool-file-actions .btn{min-height:44px}.pool-pagination .btn{min-height:44px}}
 
 .pool-metrics{grid-template-columns:repeat(5,minmax(0,1fr))}.pool-metrics strong{font-size:clamp(20px,2vw,28px);white-space:nowrap}@media(max-width:1150px){.pool-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:760px){.pool-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Release update controls share the panel's native RTL form rhythm. */
+.update-versions{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-block:20px}.update-versions>div{display:flex;flex-direction:column;gap:8px;border:1px solid var(--border);border-radius:14px;padding:16px;min-width:0}.update-versions span{font-size:13px;color:var(--text-muted)}.update-versions strong{font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.update-actions{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-block-start:18px}.update-job{padding:16px;border:1px solid var(--border);border-radius:14px;margin-block:16px;overflow-wrap:anywhere}.update-job>div{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px}.update-job progress{width:100%;accent-color:var(--accent);margin-top:14px}.update-job code{display:block;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px}.update-job.succeeded{border-color:var(--success)}.update-job.failed,.update-job.rolled_back{border-color:var(--danger)}@media(max-width:480px){.update-versions{grid-template-columns:1fr}.update-actions>.btn{flex-grow:1}}
+
+.update-progress-label{margin-top:16px;font-variant-numeric:tabular-nums}.update-progress-label strong{color:var(--accent-2-strong)}
+
+.pool-reason{display:block;max-width:220px;margin-top:6px;font-size:11px;color:var(--text-muted);white-space:normal;line-height:1.8}

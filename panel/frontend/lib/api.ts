@@ -43,11 +43,15 @@ async function request<T>(path: string, options: RequestInit = {}, timeoutMs = 1
 
 export type PoolFile = { kind?: "default" | "file"; id: number; name: string; count: number; enabled: boolean; position: number; hash: string };
 export type PoolFiles = { files: PoolFile[]; mode: string; probe_pps: number; auto_peer_sync: boolean; total: number; peer_count: number; legacy_content: boolean; updated_at: string };
-export type SourceQuality = { ip: string; state: string; rtt_ms: number; loss_pct: number; probes: number; replies: number; failures: number; retry_at?: number; last_success?: number };
+export type SourceQuality = { reason?: string; ip: string; state: string; rtt_ms: number; loss_pct: number; probes: number; replies: number; failures: number; retry_at?: number; last_success?: number };
 export type PoolState = { available: boolean; reason?: string; runtime?: { persistence_error?: string; peer_ready: boolean; control_fresh: boolean; our_sources_accepted: boolean; pool: { mode: string; total: number; healthy: number; testing: number; quarantined: number; unknown: number; active?: string; offset: number; items: SourceQuality[] }; peer: { in_flight?: boolean; supported: boolean; status: string; error?: string; count: number; revision?: string; progress: number } } };
+export type UpdateStatus = { current: string; latest?: string; release_url?: string; supported: boolean; reason?: string; available: boolean; checked_at?: string; job?: { id: string; from: string; target: string; phase: string; progress: number; bytes_done?: number; bytes_total?: number; error?: string } };
 export const api = {
+ updateStatus: (signal?: AbortSignal) => request<UpdateStatus>('/updates', {signal}),
+ updateCheck: () => request<UpdateStatus>('/updates/check', {method:'POST'},30000),
+ updateInstall: (version:string) => request<UpdateStatus>('/updates/install', {method:'POST',body:JSON.stringify({version})},30000),
  poolDefault: (id: number) => request<{ content: string; count: number; updated_at: string }>(`/instances/${id}/pools/default`, {}, 120000),
- poolDefaultSave: (id: number, content: string, version: string) => { const data = new FormData(); data.append('file', new Blob([content], { type: 'text/plain' }), 'default.txt'); data.append('updated_at', version); return request<{ count: number; updated_at: string }>(`/instances/${id}/pools/default`, { method: 'POST', body: data }, 120000); },
+ poolDefaultSave: (id: number, content: string, version: string, settings?: { ids: number[]; mode: string; probe_pps: number; auto_peer_sync: boolean }) => { const data = new FormData(); data.append('file', new Blob([content], { type: 'text/plain' }), 'default.txt'); data.append('updated_at', version); if (settings) data.append('settings', JSON.stringify(settings)); return request<{ count: number; total: number; updated_at: string }>(`/instances/${id}/pools/default`, { method: 'POST', body: data }, 120000); },
  poolFiles: (id: number, signal?: AbortSignal) => request<PoolFiles>(`/instances/${id}/pools`, { signal }),
  poolUpload: (id: number, file: File) => { const data = new FormData(); data.append('file', file); return request<PoolFile>(`/instances/${id}/pools/upload`, { method: 'POST', body: data }, 120000); },
  poolMigrate: (id: number) => request<PoolFile>(`/instances/${id}/pools/migrate`, { method: 'POST' }),

@@ -77,6 +77,8 @@ func newPoolRuntime(c Config, conn *PacketConn, codec *Codec) *poolRuntime {
 	sum := sha256.Sum256([]byte(raw))
 	r := &poolRuntime{cfg: c, conn: conn, codec: codec, identity: hex.EncodeToString(sum[:]), queue: make(chan poolMessage, 256), save: make(chan struct{}, 1), helloPending: map[string]time.Time{}, view: PeerPoolView{Status: "waiting"}}
 	peerSources, _ := c.PeerSources()
+	r.view.Status = "configured"
+	r.view.Count = len(peerSources)
 	_, r.configuredPeerRevision, _ = packSources(peerSources)
 	sources, _ := c.Sources()
 	r.packed, r.digest, _ = packSources(sources)
@@ -224,6 +226,9 @@ func (r *poolRuntime) run(ctx context.Context) {
 	defer checkpoint.Stop()
 	nextHello := time.Time{}
 	probeTurn := uint64(0)
+	nextLog := time.Time{}
+	lastLog := time.Time{}
+	lastSummary := ""
 	for {
 		select {
 		case <-ctx.Done():
@@ -231,6 +236,16 @@ func (r *poolRuntime) run(ctx context.Context) {
 		case now := <-maintenance.C:
 			if r.conn.pool.Expire(now, r.fresh(now)) {
 				r.persist()
+				nextLog = time.Time{}
+			}
+			if policy.Mode != "legacy" && !now.Before(nextLog) {
+				summary := PoolEvent(r.snapshot(0, 1, ""))
+				if summary != lastSummary || now.Sub(lastLog) >= time.Minute {
+					log.Print(summary)
+					lastSummary = summary
+					lastLog = now
+				}
+				nextLog = now.Add(10 * time.Second)
 			}
 			r.mu.Lock()
 			helloEnabled := policy.Mode != "legacy" || r.cfg.AutoPeerSync || r.view.Supported || r.requestToken != "" || len(r.peerSources) > 0
@@ -536,7 +551,7 @@ func (r *poolRuntime) snapshot(offset, limit int, filter string) PoolRuntimeView
 	view := r.conn.pool.View(offset, limit, filter)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return PoolRuntimeView{PeerReady: r.conn.peerReady.Load(), PersistenceError: r.storageError, Pool: view, Peer: r.view, OurSourcesAccepted: r.conn.peerAccepted.Load(), ControlFresh: time.Since(r.lastRoundTrip) < 8*time.Second && time.Since(r.lastControl) < 8*time.Second}
+	return PoolRuntimeView{AutoPeerSync: r.cfg.AutoPeerSync, PeerReady: r.conn.peerReady.Load(), PersistenceError: r.storageError, Pool: view, Peer: r.view, OurSourcesAccepted: r.conn.peerAccepted.Load(), ControlFresh: time.Since(r.lastRoundTrip) < 8*time.Second && time.Since(r.lastControl) < 8*time.Second}
 }
 func (r *poolRuntime) persist() {
 	if r.cfg.PoolStateFile == "" {

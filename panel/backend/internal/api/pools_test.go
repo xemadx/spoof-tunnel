@@ -197,6 +197,47 @@ func TestDefaultManualGroupStaysIndependentFromTXTFiles(t *testing.T) {
 	if file.Count != 1 || string(file.Data) != string([]byte{198, 51, 100, 55}) {
 		t.Fatal("default edit modified TXT storage")
 	}
+	// Reproduce a pending TXT selection while the default is still active in DB.
+	save("203.0.113.7")
+	database.First(&inst, inst.ID)
+	selectDefault, _ := json.Marshal(map[string]any{"ids": []uint{row.ID}, "mode": "adaptive", "probe_pps": 25, "updated_at": inst.UpdatedAt})
+	if out := call("PUT", "/instances/1/pools/settings", selectDefault, "application/json"); out.Code != 200 {
+		t.Fatal(out.Body)
+	}
+	atomicClear := func(ids []uint) *httptest.ResponseRecorder {
+		database.First(&inst, inst.ID)
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		f, _ := form.CreateFormFile("file", "default.txt")
+		f.Write(nil)
+		form.WriteField("updated_at", inst.UpdatedAt.Format(time.RFC3339Nano))
+		selection, _ := json.Marshal(map[string]any{"ids": ids, "mode": "failover", "probe_pps": 30, "auto_peer_sync": true})
+		form.WriteField("settings", string(selection))
+		form.Close()
+		return call("POST", "/instances/1/pools/default", body.Bytes(), form.FormDataContentType())
+	}
+	if out := atomicClear([]uint{99999}); out.Code != 400 {
+		t.Fatal("invalid selection accepted", out.Code)
+	}
+	database.First(&row, row.ID)
+	if row.Count != 1 || !row.Enabled {
+		t.Fatal("invalid atomic save partly cleared default")
+	}
+	if out := atomicClear([]uint{row.ID, file.ID}); out.Code != 200 {
+		t.Fatal("pending TXT could not replace default", out.Code, out.Body)
+	}
+	database.First(&row, row.ID)
+	database.First(&file, file.ID)
+	database.First(&inst, inst.ID)
+	if row.Count != 0 || row.Enabled || !file.Enabled || inst.SpoofIPList != "198.51.100.55" || inst.PoolMode != "failover" || inst.PoolPPS != 30 || !inst.AutoPeerSync {
+		t.Fatal("default and selection not saved together", row, file, inst)
+	}
+
+	effective, err := inst.L3Config().Sources()
+	if err != nil || len(effective) != 1 || effective[0].String() != "198.51.100.55" {
+		t.Fatal("compiled engine pool differs from selected TXT", effective, err)
+	}
+
 }
 
 func TestSlowPoolBodyDoesNotBlockConnectionStop(t *testing.T) {

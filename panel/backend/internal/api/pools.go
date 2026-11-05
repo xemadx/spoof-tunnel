@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -61,7 +62,11 @@ func (s *Server) handlePoolList(c *gin.Context) {
 	if total == 0 && inst.SpoofIP != "" {
 		total = 1
 	}
-	c.JSON(200, gin.H{"files": files, "mode": l3.PoolPolicy{Mode: inst.PoolMode}.Normalized().Mode, "probe_pps": l3.PoolPolicy{ProbePPS: inst.PoolPPS}.Normalized().ProbePPS, "auto_peer_sync": inst.AutoPeerSync, "total": total, "peer_count": len(strings.Fields(inst.PeerSpoofIPList)), "legacy_content": len(files) == 0 && strings.TrimSpace(inst.SpoofIPList) != "", "updated_at": inst.UpdatedAt})
+	peerCount := len(strings.Fields(inst.PeerSpoofIPList))
+	if peerCount == 0 && inst.PeerSpoofIP != "" {
+		peerCount = 1
+	}
+	c.JSON(200, gin.H{"files": files, "mode": l3.PoolPolicy{Mode: inst.PoolMode}.Normalized().Mode, "probe_pps": l3.PoolPolicy{ProbePPS: inst.PoolPPS}.Normalized().ProbePPS, "auto_peer_sync": inst.AutoPeerSync, "total": total, "peer_count": peerCount, "legacy_content": len(files) == 0 && strings.TrimSpace(inst.SpoofIPList) != "", "updated_at": inst.UpdatedAt})
 }
 func (s *Server) handlePoolUpload(c *gin.Context) {
 	inst, ok := s.poolInstance(c)
@@ -147,6 +152,72 @@ func (s *Server) handlePoolMigrate(c *gin.Context) {
 	}
 	c.JSON(200, row)
 }
+
+type poolSelection struct {
+	IDs       []uint    `json:"ids"`
+	Mode      string    `json:"mode"`
+	PPS       int       `json:"probe_pps"`
+	AutoSync  bool      `json:"auto_peer_sync"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func savePoolSelection(tx *gorm.DB, inst *db.TunnelInstance, req poolSelection) error {
+	if len(req.IDs) > 65 || len(req.IDs) == 0 {
+		return fmt.Errorf("select between 1 and 65 non-empty groups")
+	}
+	policy := l3.PoolPolicy{Mode: req.Mode, ProbePPS: req.PPS}.Normalized()
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+	ips := []string{}
+	seen := map[string]bool{}
+	idSeen := map[uint]bool{}
+	for _, id := range req.IDs {
+		if idSeen[id] {
+			return fmt.Errorf("duplicate pool file selection")
+		}
+		idSeen[id] = true
+		var row db.PoolFile
+		if tx.Where("instance_id = ?", inst.ID).First(&row, id).Error != nil {
+			return fmt.Errorf("pool file does not belong to this connection")
+		}
+		if row.Count == 0 {
+			return fmt.Errorf("an empty default group cannot be selected")
+		}
+		values, err := l3.DecodeSourceFile(row.Data)
+		if err != nil {
+			return err
+		}
+		for _, ip := range values {
+			v := ip.String()
+			if !seen[v] {
+				seen[v] = true
+				ips = append(ips, v)
+				if len(ips) > l3.MaxPoolSources {
+					return fmt.Errorf("selected union exceeds the source limit")
+				}
+			}
+		}
+	}
+	inst.SpoofIPList = strings.Join(ips, "\n")
+	inst.PoolMode = policy.Mode
+	inst.PoolPPS = policy.ProbePPS
+	inst.AutoPeerSync = req.AutoSync
+	if err := inst.Validate(); err != nil {
+		return err
+	}
+
+	if err := tx.Model(&db.PoolFile{}).Where("instance_id = ?", inst.ID).Update("enabled", false).Error; err != nil {
+		return err
+	}
+	for position, id := range req.IDs {
+		if err := tx.Model(&db.PoolFile{}).Where("id = ? AND instance_id = ?", id, inst.ID).Updates(map[string]any{"enabled": true, "position": position}).Error; err != nil {
+			return err
+		}
+	}
+	return db.SaveTunnel(tx, inst, false)
+}
+
 func (s *Server) handlePoolSettings(c *gin.Context) {
 	s.mutationMu.Lock()
 	defer s.mutationMu.Unlock()
@@ -159,13 +230,7 @@ func (s *Server) handlePoolSettings(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "stop this connection before applying its pool selection"})
 		return
 	}
-	var req struct {
-		IDs       []uint    `json:"ids"`
-		Mode      string    `json:"mode"`
-		PPS       int       `json:"probe_pps"`
-		AutoSync  bool      `json:"auto_peer_sync"`
-		UpdatedAt time.Time `json:"updated_at"`
-	}
+	var req poolSelection
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
@@ -174,69 +239,7 @@ func (s *Server) handlePoolSettings(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "connection changed; reload its pool settings"})
 		return
 	}
-	if len(req.IDs) > 65 || len(req.IDs) == 0 {
-		c.JSON(400, gin.H{"error": "select between 1 and 65 non-empty groups"})
-		return
-	}
-	policy := l3.PoolPolicy{Mode: req.Mode, ProbePPS: req.PPS}.Normalized()
-	if err := policy.Validate(); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-	ips := []string{}
-	seen := map[string]bool{}
-	idSeen := map[uint]bool{}
-	for _, id := range req.IDs {
-		if idSeen[id] {
-			c.JSON(400, gin.H{"error": "duplicate pool file selection"})
-			return
-		}
-		idSeen[id] = true
-		var row db.PoolFile
-		if s.db.Where("instance_id = ?", inst.ID).First(&row, id).Error != nil {
-			c.JSON(400, gin.H{"error": "pool file does not belong to this connection"})
-			return
-		}
-		if row.Count == 0 {
-			c.JSON(400, gin.H{"error": "an empty default group cannot be selected"})
-			return
-		}
-		values, err := l3.DecodeSourceFile(row.Data)
-		if err != nil {
-			c.JSON(500, gin.H{"error": err.Error()})
-			return
-		}
-		for _, ip := range values {
-			v := ip.String()
-			if !seen[v] {
-				seen[v] = true
-				ips = append(ips, v)
-				if len(ips) > l3.MaxPoolSources {
-					c.JSON(400, gin.H{"error": "selected union exceeds the source limit"})
-					return
-				}
-			}
-		}
-	}
-	inst.SpoofIPList = strings.Join(ips, "\n")
-	inst.PoolMode = policy.Mode
-	inst.PoolPPS = policy.ProbePPS
-	inst.AutoPeerSync = req.AutoSync
-	if err := inst.Validate(); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-	err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&db.PoolFile{}).Where("instance_id = ?", inst.ID).Update("enabled", false).Error; err != nil {
-			return err
-		}
-		for position, id := range req.IDs {
-			if err := tx.Model(&db.PoolFile{}).Where("id = ? AND instance_id = ?", id, inst.ID).Updates(map[string]any{"enabled": true, "position": position}).Error; err != nil {
-				return err
-			}
-		}
-		return db.SaveTunnel(tx, &inst, false)
-	})
+	err := s.db.Transaction(func(tx *gorm.DB) error { return savePoolSelection(tx, &inst, req) })
 	if err != nil {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
@@ -424,6 +427,14 @@ func (s *Server) handleDefaultPoolSave(c *gin.Context) {
 		c.JSON(409, gin.H{"error": "connection changed; reload its pool settings"})
 		return
 	}
+	var selection *poolSelection
+	if value := c.Request.FormValue("settings"); value != "" {
+		selection = &poolSelection{}
+		if len(value) > 16384 || json.Unmarshal([]byte(value), selection) != nil {
+			c.JSON(400, gin.H{"error": "invalid pool selection"})
+			return
+		}
+	}
 	raw, err := io.ReadAll(io.LimitReader(file, (10<<20)+1))
 	if err != nil || len(raw) > 10<<20 {
 		c.JSON(400, gin.H{"error": "manual source content exceeds 10 MiB"})
@@ -463,6 +474,22 @@ func (s *Server) handleDefaultPoolSave(c *gin.Context) {
 		row.Enabled = false
 	}
 	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if selection != nil {
+			if err := tx.Save(&row).Error; err != nil {
+				return err
+			}
+			// Clearing the default also unselects it, in the same transaction.
+			if row.Count == 0 {
+				ids := []uint{}
+				for _, id := range selection.IDs {
+					if id != row.ID {
+						ids = append(ids, id)
+					}
+				}
+				selection.IDs = ids
+			}
+			return savePoolSelection(tx, &inst, *selection)
+		}
 		if !row.Enabled && row.Count > 0 {
 			var active int64
 			if err := tx.Model(&db.PoolFile{}).Where("instance_id = ? AND enabled = ? AND id <> ?", inst.ID, true, row.ID).Count(&active).Error; err != nil {
@@ -507,5 +534,5 @@ func (s *Server) handleDefaultPoolSave(c *gin.Context) {
 		c.JSON(400, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"ok": true, "count": row.Count, "updated_at": inst.UpdatedAt})
+	c.JSON(200, gin.H{"ok": true, "count": row.Count, "total": effectiveSourceCount(inst), "updated_at": inst.UpdatedAt})
 }

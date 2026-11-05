@@ -27,6 +27,16 @@ const STATES: Record<string, string> = {
   quarantined: "قرنطینه",
   unknown: "ارزیابی نشده",
 };
+const REASONS: Record<string, string> = {
+  awaiting_confirmation: "در انتظار تأیید بعدی",
+  cooldown_retest: "بازآزمایی پس از قرنطینه",
+  verification_expired: "نیازمند تأیید تازه",
+  reverse_unconfirmed: "مسیر برگشت هنوز تأیید نشده",
+  probe_timeout: "عدم پاسخ به آزمون",
+  large_probe_timeout: "عدم پاسخ به آزمون بستهٔ بزرگ",
+  recent_probe_loss: "عدم پاسخ در آزمون‌های اخیر",
+  restored_quarantine: "قرنطینهٔ حفظ‌شده پس از ری‌استارت",
+};
 const num = (n: number) => n.toLocaleString("fa-IR");
 function explain(e: unknown) {
   const s =
@@ -239,20 +249,17 @@ export function PoolManager({
   };
   const saveManual = () =>
     void action("default-save", async () => {
-      const result = await api.poolDefaultSave(
-        id,
-        manual,
-        versionRef.current || manualVersion,
-      );
-      versionRef.current = result.updated_at;
-      onApplied(result.updated_at);
-      setNotice(`گروه پیش‌فرض با ${num(result.count)} مبدأ یکتا ذخیره شد.`);
-      setManualBase(manual);
-      setManualVersion(result.updated_at);
-      await refresh(true);
-      await readManual();
+      await saveAll();
     });
   const manualDirty = manualLoaded && manual !== manualBase;
+  const validPPS = Number.isInteger(pps) && pps >= 1 && pps <= 100;
+  const validSelection = !!data?.files.some(
+    (file) =>
+      ids.includes(file.id) &&
+      (file.kind === "default" && manualDirty
+        ? manual.trim() !== ""
+        : file.count > 0),
+  );
   const move = (id: number, delta: number) => {
     draftDirtyRef.current = true;
     setIDs((current) => {
@@ -264,29 +271,36 @@ export function PoolManager({
       return list;
     });
   };
-  const apply = () =>
-    void action("apply", async () => {
-      if (!data) return;
-      const result = await api.poolSettings(id, {
-        ids,
-        mode,
-        probe_pps: pps,
-        auto_peer_sync: auto,
-        updated_at: versionRef.current,
-      });
-      versionRef.current = result.updated_at;
-      onApplied(result.updated_at, {
-        pool_mode: mode,
-        pool_pps: pps,
-        auto_peer_sync: auto,
-      });
-      await refresh();
-      setManualVersion(result.updated_at);
-      setOffset(0);
-      setNotice(
-        `${num(result.total)} مبدأ یکتا ذخیره شد؛ با شروع اتصال، روش جدید اجرا می‌شود.`,
-      );
+  const saveAll = async () => {
+    if (!data) return;
+    const settings = { ids, mode, probe_pps: pps, auto_peer_sync: auto };
+    const result = manualDirty
+      ? await api.poolDefaultSave(
+          id,
+          manual,
+          versionRef.current || manualVersion,
+          settings,
+        )
+      : await api.poolSettings(id, {
+          ...settings,
+          updated_at: versionRef.current,
+        });
+    versionRef.current = result.updated_at;
+    onApplied(result.updated_at, {
+      pool_mode: mode,
+      pool_pps: pps,
+      auto_peer_sync: auto,
     });
+    draftDirtyRef.current = false;
+    await refresh();
+    if (manualLoaded) await readManual();
+    setManualVersion(result.updated_at);
+    setOffset(0);
+    setNotice(
+      `${num(result.total)} مبدأ یکتا ذخیره شد؛ محتوای پیش‌فرض، انتخاب گروه‌ها و روش ارسال هماهنگ اعمال شدند.`,
+    );
+  };
+  const apply = () => void action("apply", saveAll);
   const rt = state?.runtime,
     peer = rt?.peer;
   const dirty =
@@ -399,7 +413,10 @@ export function PoolManager({
         )}
       </section>
       {running && rt && rt.pool.mode !== "legacy" && !rt.peer_ready && (
-        <div className="pool-note" role="status">طرف مقابل هنوز آمادهٔ ارسال داده نیست؛ منتظر تکمیل تأیید مبدأ و همگام‌سازی آن سمت هستیم.</div>
+        <div className="pool-note" role="status">
+          طرف مقابل هنوز آمادهٔ ارسال داده نیست؛ منتظر تکمیل تأیید مبدأ و
+          همگام‌سازی آن سمت هستیم.
+        </div>
       )}
       {conflict && (
         <div className="pool-feedback error" role="alert">
@@ -602,8 +619,9 @@ export function PoolManager({
         >
           <summary>ویرایش آی‌پی‌های دستیِ گروه پیش‌فرض</summary>
           <p className="hint">
-            آی‌پی‌هایی که مستقیم وارد می‌کنی فقط در گروه «پیش‌فرض» ذخیره
-            می‌شوند. هر فایل TXT گروه مستقل خودش را دارد.
+            ذخیره، محتوای پیش‌فرض و انتخاب فعلی گروه‌ها و روش ارسال را یکجا
+            اعمال می‌کند. آی‌پی‌های دستی فقط در گروه «پیش‌فرض» ذخیره می‌شوند. هر
+            فایل TXT گروه مستقل خودش را دارد.
           </p>
           {manualLoaded ? (
             <>
@@ -622,9 +640,11 @@ export function PoolManager({
               </label>
               <div className="pool-apply">
                 <p className="hint">
-                  {running
-                    ? "برای ویرایش این گروه، ابتدا اتصال را متوقف کن."
-                    : "برای فهرست‌های بزرگ، فایل TXT مستقل اضافه کن."}
+                  {manualDirty && !validSelection
+                    ? "برای ذخیرهٔ پیش‌فرض خالی، یک گروه TXT دارای آی‌پی را انتخاب کن."
+                    : running
+                      ? "برای ویرایش این گروه، ابتدا اتصال را متوقف کن."
+                      : "برای فهرست‌های بزرگ، فایل TXT مستقل اضافه کن."}
                 </p>
                 <div className="pool-file-actions">
                   <button
@@ -636,7 +656,14 @@ export function PoolManager({
                   </button>
                   <button
                     className="btn btn-primary"
-                    disabled={running || !!busy || conflict || !manualDirty}
+                    disabled={
+                      running ||
+                      !!busy ||
+                      conflict ||
+                      !manualDirty ||
+                      !validPPS ||
+                      !validSelection
+                    }
                     onClick={saveManual}
                   >
                     {busy === "default-save"
@@ -730,7 +757,7 @@ export function PoolManager({
         <div className="pool-apply">
           <span className="hint">
             {manualDirty
-              ? "ابتدا تغییرات گروه پیش‌فرض را ذخیره کن یا کنار بگذار."
+              ? "محتوای پیش‌فرض و انتخاب گروه‌ها با هم اعمال می‌شوند؛ برای خالی‌کردن پیش‌فرض، گروه دیگری را انتخاب کن."
               : running && dirty
                 ? "اتصال با نسخهٔ ذخیره‌شده اجراست؛ تغییرات این صفحه هنوز اعمال نشده‌اند."
                 : running
@@ -745,10 +772,9 @@ export function PoolManager({
               running ||
               !!busy ||
               conflict ||
-              !dirty ||
+              (!dirty && !manualDirty) ||
               !data ||
-              ids.length === 0 ||
-              manualDirty ||
+              !validSelection ||
               !Number.isInteger(pps) ||
               pps < 1 ||
               pps > 100
@@ -803,15 +829,17 @@ export function PoolManager({
         <div className="pool-peer">
           <strong>{num(peer?.count ?? data?.peer_count ?? 0)} مبدأ</strong>
           <span className="pill">
-            {peer?.status === "synced"
-              ? "فهرست معتبر دریافت شد"
-              : peer?.status === "receiving"
-                ? `دریافت ${num(peer.progress)}٪`
-                : peer?.status === "error"
-                  ? "دریافت ناموفق"
-                  : running
-                    ? "در انتظار هماهنگی"
-                    : "اتصال متوقف است"}
+            {peer?.status === "configured"
+              ? "فهرست ذخیره‌شده در تنظیمات"
+              : peer?.status === "synced"
+                ? "فهرست معتبر دریافت شد"
+                : peer?.status === "receiving"
+                  ? `دریافت ${num(peer.progress)}٪`
+                  : peer?.status === "error"
+                    ? "دریافت ناموفق"
+                    : running
+                      ? "در انتظار هماهنگی"
+                      : "اتصال متوقف است"}
           </span>
         </div>
         {peer?.status === "receiving" && (
@@ -889,6 +917,11 @@ export function PoolManager({
                     <span className={`pool-state ${row.state}`}>
                       {STATES[row.state] ?? row.state}
                     </span>
+                    {row.reason && REASONS[row.reason] && (
+                      <small className="pool-reason">
+                        {REASONS[row.reason]}
+                      </small>
+                    )}
                   </td>
                   <td>
                     {row.replies ? `${num(Math.round(row.rtt_ms))} ms` : "—"}

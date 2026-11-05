@@ -21,7 +21,7 @@ def main():
         run('ip','-n',names[0],'route','add','198.51.100.21/32','dev','ema0')
         run('ip','-n',names[1],'route','add','198.51.100.11/32','dev','emb0')
         with tempfile.TemporaryDirectory(prefix='spoof-l3-test-') as tmp:
-            for send,recv,multi in ([(p,p,True) for p in ["icmp","udp","tcp","ipip","experimental"]]+[("icmp","tcp",True)] if os.environ.get("SPOOF_SMART_POOL") else [("udp","udp",False)] if os.environ.get("SPOOF_MTU_TEST") else [(a,b,False) for a in ['icmp','udp','tcp','ipip','experimental'] for b in ['icmp','udp','tcp','ipip','experimental']] + [(p,p,True) for p in ['icmp','udp','tcp','ipip','experimental']]):
+            for send,recv,multi in ([("icmp","tcp",True),("udp","ipip",True),("experimental","experimental",True)] if os.environ.get("SPOOF_SMART_SMOKE") else [(p,p,True) for p in ["icmp","udp","tcp","ipip","experimental"]]+[("icmp","tcp",True)] if os.environ.get("SPOOF_SMART_POOL") else [("udp","udp",False)] if os.environ.get("SPOOF_MTU_TEST") else [(a,b,False) for a in ['icmp','udp','tcp','ipip','experimental'] for b in ['icmp','udp','tcp','ipip','experimental']] + [(p,p,True) for p in ['icmp','udp','tcp','ipip','experimental']]):
                 key=base64.b64encode(os.urandom(32)).decode();case=[];logs=[]
                 try:
                     for i,role in enumerate(['local','remote']):
@@ -30,7 +30,7 @@ def main():
                             cfg['spoof_sources']=[['198.51.100.10','198.51.100.11'],['198.51.100.20','198.51.100.21']][i]
                             cfg['peer_spoofs']=[['198.51.100.20','198.51.100.21'],['198.51.100.10','198.51.100.11']][i]
                         if os.environ.get('SPOOF_SMART_POOL'):
-                            cfg['pool_policy']={'mode':'adaptive','probe_pps':100}
+                            cfg['pool_policy']={'mode':os.environ.get('SPOOF_POOL_MODE','adaptive'),'probe_pps':100}
                             cfg['auto_peer_sync']=True
                             cfg['pool_state_file']=str(pathlib.Path(tmp)/f'{role}-state.json')
                             cfg['control_socket']=str(pathlib.Path(tmp)/f'{role}.sock')
@@ -104,7 +104,7 @@ s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM);s.settimeout(8);s.sendto(b'x'*
                         run('ip','netns','exec',names[0],'ping','-c','2','-W','2','10.77.0.2',timeout=10)
                     for log in logs:
                         log.flush();log.seek(0);text=log.read();assert '"peer_connected":true' in text,text
-                    report.append(dict(send=send,receive=recv,multi_source=multi,icmp=True,tcp_bytes=131072,udp=True,authenticated_heartbeat=True));print(f'PASS {send}/{recv} multi_source={multi}',flush=True)
+                    report.append(dict(send=send,receive=recv,pool_mode=os.environ.get("SPOOF_POOL_MODE","adaptive") if os.environ.get("SPOOF_SMART_POOL") else "legacy",multi_source=multi,icmp=True,tcp_bytes=131072,udp=True,authenticated_heartbeat=True));print(f'PASS {send}/{recv} multi_source={multi}',flush=True)
                 except Exception:
                     for log in logs:
                         log.flush();log.seek(0);print(log.read(),flush=True)

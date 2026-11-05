@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"flag"
 	"fmt"
@@ -21,6 +22,7 @@ import (
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/auth"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/manager"
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/updater"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -46,6 +48,7 @@ func main() {
 	setupPass := flag.String("setup-pass", "", "setup: admin password")
 	setupPort := flag.Int("setup-port", 0, "setup: panel port")
 	showVersion := flag.Bool("version", false, "print panel version and exit")
+	applyUpdate := flag.Bool("apply-update", false, "apply a queued update from the independent systemd service")
 	flag.Parse()
 
 	if *showVersion {
@@ -53,6 +56,16 @@ func main() {
 		return
 	}
 
+	if *applyUpdate {
+		signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stopSignals()
+		ctx, cancel := context.WithTimeout(signalCtx, 15*time.Minute)
+		defer cancel()
+		if err := updater.New(panelVersion, "/etc/spoof-panel").Apply(ctx); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	// Determine data directory
 	dataDir := "/etc/spoof-panel"
 	if os.Getenv("SPOOF_DATA_DIR") != "" {

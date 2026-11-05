@@ -29,9 +29,12 @@ async function mock(page: Page, running = false) {
     const matches = request.postDataBuffer()?.toString('utf8').match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? [];
     manualContent = Array.from(new Set(matches)).join('\n');
     poolFiles[0].count = manualContent ? manualContent.split('\n').length : 0;
+    const selected=request.postDataBuffer()?.toString('utf8').match(/name="settings"\r\n\r\n([^\r\n]+)/);
+    if(selected){const settings=JSON.parse(selected[1]);poolMode=settings.mode;poolFiles=poolFiles.map(f=>({...f,enabled:settings.ids.includes(f.id)&&f.count>0}));}
     if (poolFiles[0].enabled) instance.spoof_ip_list = manualContent;
+    else if(poolFiles[1]?.enabled) instance.spoof_ip_list='198.51.100.22';
    }
-   data = { content: manualContent, count: poolFiles[0].count, updated_at: poolVersion };
+   data = { content: manualContent, count: poolFiles[0].count, total: instance.spoof_ip_list ? 1 : 0, updated_at: poolVersion };
   } else if (path === '/instances/1/pools/settings') {
    const body = request.postDataJSON(); poolMode = body.mode;poolVersion='2026-11-05T12:00:01Z';instance.updated_at=poolVersion;
    poolFiles = poolFiles.map(f => ({ ...f, enabled: body.ids.includes(f.id) }));
@@ -418,4 +421,104 @@ test('retrying after a failed TXT upload keeps the pending group selection',asyn
  await page.getByRole('button',{name:'دریافت دوباره',exact:true}).click();
  await expect(page.getByRole('checkbox',{name:/فارس.txt/})).toBeChecked();
  await expect(page.getByText('تغییرات هنوز اعمال نشده‌اند.')).toBeVisible();
+});
+
+for(const save of ['ذخیرهٔ گروه پیش‌فرض','اعمال انتخاب و روش ارسال']){
+ test(`clear default and activate pending TXT atomically using ${save}`,async({page})=>{
+  await mock(page);await page.goto(prefix+'/dashboard/tunnels/edit/?id=1');await page.getByRole('tab',{name:'استخر IPهای اسپوف'}).click();
+  await page.getByText('ویرایش آی‌پی‌های دستیِ گروه پیش‌فرض',{exact:true}).click();
+  const editor=page.getByRole('textbox',{name:'آی‌پی‌های گروه پیش‌فرض',exact:true});await expect(editor).toHaveValue('198.51.100.1');await editor.fill('');
+  await expect(page.getByRole('button',{name:save,exact:true})).toBeDisabled();
+  await page.getByRole('checkbox',{name:/فارس.txt/}).check();
+  await page.getByRole('button',{name:save,exact:true}).click();
+  await expect(editor).toHaveValue('');await expect(page.getByRole('checkbox',{name:/فارس.txt/})).toBeChecked();await expect(page.getByRole('checkbox',{name:/پیش‌فرض/})).not.toBeChecked();
+  await expect(page.locator('.pool-feedback.error')).toHaveCount(0);
+ });
+}
+
+const updateReady={current:'v0.4.1',latest:'v0.4.2',release_url:'https://github.com/xemadx/spoof-tunnel/releases/tag/v0.4.2',supported:true,available:true};
+test('panel updater confirms a version, survives disconnect and exposes rollback without a second install',async({page})=>{
+ await mock(page);let installs=0,reads=0;
+ await page.route('**/api/updates**',route=>{
+  const path=new URL(route.request().url()).pathname;let data:unknown=updateReady;let status=200;
+  if(path.endsWith('/install')){installs++;data={...updateReady,job:{id:'update-one',from:'v0.4.1',target:'v0.4.2',phase:'queued',progress:0}};}
+  else if(installs && !path.endsWith('/check')){reads++;if(reads===1){status=503;data={error:'restarting'};}else data={...updateReady,job:{id:'update-one',from:'v0.4.1',target:'v0.4.2',phase:'rolled_back',progress:90,error:'injected_startup_failure'}};}
+  return route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
+ });
+ await page.goto(prefix+'/dashboard/settings/');
+ await page.getByRole('button',{name:'نصب نسخهٔ v0.4.2'}).click();
+ await expect(page.getByRole('dialog',{name:'نصب به‌روزرسانی پنل'})).toBeVisible();await page.keyboard.press('Escape');expect(installs).toBe(0);
+ await page.getByRole('button',{name:'نصب نسخهٔ v0.4.2'}).click();await page.getByRole('button',{name:'شروع نصب v0.4.2'}).click();
+ await expect(page.getByText(/ارتباط پنل موقتاً قطع است/)).toBeVisible();
+ await expect(page.getByText('آپدیت کامل نشد؛ نسخهٔ قبلی بازیابی شد',{exact:true})).toBeVisible({timeout:10000});
+ expect(installs).toBe(1);await expect(page.getByRole('button',{name:'نصب نسخهٔ v0.4.2'})).toBeEnabled();
+});
+test('successful update reloads the page once and preserves the signed-in session',async({page})=>{
+ await mock(page);let installed=false,navigations=0;
+ await page.route('**/api/system',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({panel_version:installed?'v0.4.2':'v0.4.1',hostname:'test',cpus:2,memory_mb:20})}));
+ page.on('request',request=>{if(request.resourceType()==='document'&&new URL(request.url()).pathname.endsWith('/dashboard/settings/'))navigations++;});
+ await page.route('**/api/updates**',route=>{
+  const path=new URL(route.request().url()).pathname;
+  const job={id:'update-success',from:'v0.4.1',target:'v0.4.2',phase:'succeeded',progress:100};
+  let data:unknown=installed?{...updateReady,current:'v0.4.2',available:false,job}:updateReady;
+  if(path.endsWith('/install')){installed=true;data={...updateReady,job:{...job,phase:'queued',progress:0}};}
+  return route.fulfill({contentType:'application/json',body:JSON.stringify(data)});
+ });
+ await page.goto(prefix+'/dashboard/settings/');await page.getByRole('button',{name:'نصب نسخهٔ v0.4.2'}).click();await page.getByRole('button',{name:'شروع نصب v0.4.2'}).click();
+ await expect.poll(()=>navigations).toBe(2);await expect(page.getByText('به‌روزرسانی با موفقیت انجام شد',{exact:true})).toBeVisible();await expect(page.locator('.brand-copy .mono')).toHaveText('v0.4.2');
+ expect(await page.evaluate(()=>sessionStorage.getItem('spoof-panel-pending-update'))).toBeNull();
+ expect(await page.evaluate(()=>localStorage.getItem('token'))).toBe('review');
+ await page.waitForTimeout(2200);expect(navigations).toBe(2);
+});
+test('GitHub check errors are recoverable and never start an installation',async({page})=>{
+ await mock(page);let checks=0;
+ await page.route('**/api/updates**',route=>{
+  const check=new URL(route.request().url()).pathname.endsWith('/check');if(check)checks++;
+  return route.fulfill({status:check?502:200,contentType:'application/json',body:JSON.stringify(check?{error:'github_http_403'}:{current:'v0.4.1',supported:true,available:false})});
+ });
+ await page.goto(prefix+'/dashboard/settings/');await page.getByRole('button',{name:'بررسی نسخهٔ جدید'}).click();
+ await expect(page.getByText('گیت‌هاب فعلاً درخواست را محدود کرده است؛ کمی بعد دوباره بررسی کن.')).toBeVisible();
+ await expect(page.getByRole('button',{name:'بررسی نسخهٔ جدید'})).toBeEnabled();expect(checks).toBe(1);
+});
+test('missing update service gives an installation instruction and blocks install',async({page})=>{
+ await mock(page);await page.route('**/api/updates**',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({...updateReady,supported:false,reason:'missing_update_service'})}));
+ await page.goto(prefix+'/dashboard/settings/');await expect(page.getByText('سرویس آپدیت نصب نیست؛ یک بار نصب‌کنندهٔ جدید را روی این سرور اجرا کن.')).toBeVisible();await expect(page.getByRole('button',{name:'نصب نسخهٔ v0.4.2'})).toBeDisabled();
+});
+test('opening settings during an existing update restores its progress without starting another job',async({page},testInfo)=>{
+ await mock(page);let posts=0;await page.route('**/api/updates**',route=>{if(route.request().method()==='POST')posts++;return route.fulfill({contentType:'application/json',body:JSON.stringify({...updateReady,job:{id:'existing-update',from:'v0.4.1',target:'v0.4.2',phase:'installing',progress:75}})});});
+ await page.goto(prefix+'/dashboard/settings/');await expect(page.getByText('نصب پنل و موتور',{exact:true})).toBeVisible();await expect(page.getByRole('progressbar',{name:'پیشرفت به‌روزرسانی'})).toHaveAttribute('value','75');await expect(page.getByText('۷۵٪',{exact:true})).toBeVisible();await expect(page.getByRole('button',{name:'بررسی نسخهٔ جدید'})).toBeDisabled();await expect(page.getByLabel('رمز عبور فعلی',{exact:true})).toBeDisabled();expect(posts).toBe(0);await page.locator('.panel-update').screenshot({path:testInfo.outputPath('update-progress.png')});
+});
+for(const mode of [{name:'desktop dark',width:1280,height:900,theme:'dark'},{name:'mobile light',width:390,height:844,theme:'light'}]){
+ test(`panel update layout ${mode.name}`,async({page},testInfo)=>{
+  await page.setViewportSize({width:mode.width,height:mode.height});await mock(page);await page.addInitScript(theme=>localStorage.setItem('spoof-theme',theme),mode.theme);
+  await page.route('**/api/updates**',route=>route.fulfill({contentType:'application/json',body:JSON.stringify(updateReady)}));await page.goto(prefix+'/dashboard/settings/');
+  await expect(page.getByRole('button',{name:'نصب نسخهٔ v0.4.2'})).toBeVisible();expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.locator('.panel-update').screenshot({path:testInfo.outputPath('panel-update.png')});
+ });
+}
+
+test('pool logs render readable reasons and retain malformed raw diagnostics',async({page})=>{
+ await mock(page,true);
+ await page.routeWebSocket('**/api/instances/1/logs',socket=>{
+  socket.send('2026/11/06 01:00:00 '+JSON.stringify({event:'spoof_pool',mode:'adaptive',total:512,healthy:2,testing:3,unknown:506,quarantined:1,active:'198.51.100.3',peer_status:'synced',peer_count:40,peer_progress:100,reason:'reverse_reference_stale'}));
+  socket.send('2026/11/06 01:00:01 {malformed diagnostic');
+ });
+ await page.goto(prefix+'/dashboard/tunnels/edit/?id=1');await page.getByRole('tab',{name:'لاگ زندهٔ تونل'}).click();
+ await expect(page.locator('.log-viewer')).toContainText('مرجع رفت‌وبرگشت تازه نیست');await expect(page.locator('.log-viewer')).toContainText('مبدأ فعال 198.51.100.3');await expect(page.locator('.log-viewer')).toContainText('{malformed diagnostic');
+});
+test('live log reconnect replaces history and burst rendering stays bounded',async({page})=>{
+ await mock(page,true);let connections=0;
+ await page.routeWebSocket('**/api/instances/1/logs',socket=>{
+  connections++;
+  if(connections===1){socket.send('history-once');setTimeout(()=>socket.close(),250);}
+  else {for(let i=0;i<1000;i++)socket.send('line-'+i);}
+ });
+ await page.goto(prefix+'/dashboard/tunnels/edit/?id=1');await page.getByRole('tab',{name:'لاگ زندهٔ تونل'}).click();
+ await expect(page.locator('.log-viewer')).toContainText('history-once');
+ await expect(page.locator('.log-viewer')).toContainText('line-999',{timeout:10000});await expect(page.locator('.log-viewer')).not.toContainText('history-once');
+ expect(await page.locator('.log-viewer>div[dir=auto]').count()).toBeLessThanOrEqual(800);
+ await page.getByRole('button',{name:'پاک کردن لاگ'}).click();await expect(page.locator('.log-viewer')).not.toContainText('line-999');
+});
+test('source quality explains large-packet timeouts separately from an unknown reverse path',async({page})=>{
+ await mock(page,true);await page.route('**/api/instances/1/pools/state**',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({available:true,runtime:{peer_ready:true,control_fresh:false,our_sources_accepted:true,peer:{supported:true,status:'configured',count:1},pool:{mode:'adaptive',total:2,healthy:0,testing:0,unknown:1,quarantined:1,offset:0,items:[{ip:'192.0.2.1',state:'quarantined',reason:'large_probe_timeout',rtt_ms:0,loss_pct:60,probes:4,replies:1,failures:3,retry_at:Math.floor(Date.now()/1000)+600},{ip:'192.0.2.2',state:'unknown',reason:'reverse_unconfirmed',rtt_ms:0,loss_pct:0,probes:1,replies:0,failures:0}]}}})}));
+ await page.goto(prefix+'/dashboard/tunnels/edit/?id=1');await page.getByRole('tab',{name:'استخر IPهای اسپوف'}).click();await expect(page.getByText('عدم پاسخ به آزمون بستهٔ بزرگ',{exact:true})).toBeVisible();await expect(page.getByText('مسیر برگشت هنوز تأیید نشده',{exact:true})).toBeVisible();await expect(page.getByText('فهرست ذخیره‌شده در تنظیمات',{exact:true})).toBeVisible();
 });

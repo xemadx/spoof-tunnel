@@ -451,17 +451,15 @@ func (s *Server) handleInstanceLogs(c *gin.Context) {
 	defer conn.Close()
 	conn.SetReadLimit(1024)
 
-	// Send existing logs
-	for _, line := range s.manager.InstanceLogs(id, 100) {
+	// Subscribe at the exact history boundary before writing its snapshot.
+	history, subID, logCh := s.manager.FollowLogs(id, 100)
+	defer s.manager.UnsubscribeLogs(id, subID)
+	for _, line := range history {
 		_ = conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 		if err := conn.WriteMessage(websocket.TextMessage, []byte(line)); err != nil {
 			return
 		}
 	}
-
-	// Subscribe for new logs
-	subID, logCh := s.manager.SubscribeLogs(id)
-	defer s.manager.UnsubscribeLogs(id, subID)
 
 	// Detect client disconnect via a read goroutine
 	done := make(chan struct{})

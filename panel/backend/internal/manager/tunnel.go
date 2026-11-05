@@ -567,17 +567,19 @@ func streamLogs(inst *Instance, reader io.Reader, generation ...uint64) {
 		if len(inst.logLines) > inst.maxLogs {
 			inst.logLines = inst.logLines[len(inst.logLines)-inst.maxLogs:]
 		}
-		inst.logMu.Unlock()
 
 		// Broadcast to all subscribers
 		inst.subMu.Lock()
-		for _, ch := range inst.subs {
+		for subID, ch := range inst.subs {
 			select {
 			case ch <- line:
 			default:
+				close(ch)
+				delete(inst.subs, subID)
 			}
 		}
 		inst.subMu.Unlock()
+		inst.logMu.Unlock()
 	}
 }
 
@@ -731,4 +733,25 @@ func (m *Manager) RecoveryStatus(id uint) RecoveryState {
 
 func (m *Manager) PoolSocket(id uint) string {
 	return filepath.Join(m.configDir, fmt.Sprintf("pool-control-%d.sock", id))
+}
+
+// DataDir is the private installation/configuration directory.
+func (m *Manager) DataDir() string { return m.configDir }
+
+// FollowLogs snapshots history and installs the live subscription atomically.
+// Writers use the same logMu/subMu order, so the boundary loses/duplicates no line.
+func (m *Manager) FollowLogs(id uint, n int) ([]string, int, <-chan string) {
+	inst := m.getInstance(id)
+	inst.logMu.RLock()
+	defer inst.logMu.RUnlock()
+	inst.subMu.Lock()
+	defer inst.subMu.Unlock()
+	if n <= 0 || n > len(inst.logLines) {
+		n = len(inst.logLines)
+	}
+	history := append([]string(nil), inst.logLines[len(inst.logLines)-n:]...)
+	inst.subID++
+	ch := make(chan string, 256)
+	inst.subs[inst.subID] = ch
+	return history, inst.subID, ch
 }

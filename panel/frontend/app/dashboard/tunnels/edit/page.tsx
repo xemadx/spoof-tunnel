@@ -1,4 +1,5 @@
 "use client";
+import { formatTunnelLog } from "@/lib/tunnel-log";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { api, type RecoveryState } from "@/lib/api";
@@ -76,6 +77,8 @@ function EditContent() {
  const [forwardBusy, setForwardBusy] = useState(false);
   const [logs, setLogs] = useState<string[]>([]);
   const [wsState, setWsState] = useState<"off" | "live" | "retry">("off");
+  const followLog = useRef(true);
+ const clearLogQueue=useRef<()=>void>(()=>{});
   const logEnd = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async (full = true, force = false) => {
@@ -166,15 +169,18 @@ function EditContent() {
     let ws: WebSocket | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
-
+    let pending: string[]=[];
+    let flushTimer: ReturnType<typeof setTimeout>|null=null;
+    const flush=()=>{flushTimer=null;if(closed)return;const batch=pending;pending=[];setLogs(prev=>[...prev,...batch].slice(-800));};
+    clearLogQueue.current=()=>{pending=[];setLogs([]);};
     const connect = () => {
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
       const token = localStorage.getItem("token") || "";
       if (!token) { window.location.replace(getBasePath() + "/login/"); return; }
  const url = `${proto}//${window.location.host}${getBasePath()}/api/instances/${id}/logs`;
       ws = new WebSocket(url, ["spoof-logs", token]);
-      ws.onopen = () => setWsState("live");
-      ws.onmessage = (ev) => setLogs((prev) => [...prev.slice(-800), String(ev.data)]);
+      ws.onopen = () => {pending=[];if(flushTimer)clearTimeout(flushTimer);flushTimer=null;setLogs([]);setWsState("live");};
+      ws.onmessage = (ev) => {pending.push(String(ev.data));if(pending.length>800)pending=pending.slice(-800);if(!flushTimer)flushTimer=setTimeout(flush,100);};
       ws.onclose = () => {
         if (closed) return;
         setWsState("retry");
@@ -185,6 +191,7 @@ function EditContent() {
     return () => {
       closed = true;
       if (timer) clearTimeout(timer);
+      if(flushTimer)clearTimeout(flushTimer);
       ws?.close();
       setWsState("off");
     };
@@ -192,7 +199,7 @@ function EditContent() {
 
   useEffect(() => {
     const viewer = logEnd.current?.parentElement;
- if (viewer && viewer.scrollHeight - viewer.scrollTop - viewer.clientHeight < 160) viewer.scrollTop = viewer.scrollHeight;
+ if (viewer && followLog.current) viewer.scrollTop = viewer.scrollHeight;
   }, [logs]);
 
   const poolApplied = useCallback((version: string, patch: Record<string, string | number | boolean> = {}) => {
@@ -499,20 +506,20 @@ function EditContent() {
           <div className="section-head">
             <div>
               <h2>لاگ زندهٔ پروسهٔ تانل</h2>
-              <span className="hint">جریان رویدادهای سوکت خام، پاسخ‌های احرازشده و خطاهای هسته.</span>
+              <span className="hint">رویدادهای هسته و وضعیت استخر؛ نمایش آخرین ۸۰۰ خط. با اتصال مجدد، تاریخچهٔ تازه جایگزین می‌شود.</span>
             </div>
             <div className="row">
               <span className={`pill ${wsState === "live" ? "ok" : wsState === "retry" ? "warn" : "muted"}`}>
                 {wsState === "live" ? "● سوکت فعال" : wsState === "retry" ? "اتصال مجدد…" : "غیرفعال"}
               </span>
-              <button className="btn btn-ghost btn-sm" onClick={() => setLogs([])}>پاک کردن لاگ</button>
+              <button className="btn btn-ghost btn-sm" onClick={() => clearLogQueue.current()}>پاک کردن لاگ</button>
             </div>
           </div>
-          <div className="log-viewer" dir="ltr">
+          <div className="log-viewer" dir="ltr" onScroll={e=>{const v=e.currentTarget;followLog.current=v.scrollHeight-v.scrollTop-v.clientHeight<160;}}>
             {logs.length === 0 && <div className="muted">در حال حاضر لاگی ثبت نشده است. با راه‌اندازی اتصال، لاگ‌های خروجی اینجا نمایش داده می‌شوند.</div>}
             {logs.map((line, i) => (
-              <div key={`${i}-${line.slice(0, 14)}`} className={/error|fatal|panic/i.test(line) ? "log-error" : /warn/i.test(line) ? "log-warn" : ""}>
-                {line}
+              <div dir="auto" key={`${i}-${line.slice(0, 14)}`} className={/error|fatal|panic/i.test(line) ? "log-error" : /warn/i.test(line) ? "log-warn" : ""}>
+                {formatTunnelLog(line)}
               </div>
             ))}
             <div ref={logEnd} />

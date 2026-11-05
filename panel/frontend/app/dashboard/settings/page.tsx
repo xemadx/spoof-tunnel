@@ -1,12 +1,14 @@
 "use client";
 import { useState } from "react";
 import { api, setToken } from "@/lib/api";
+import { PanelUpdate } from "@/lib/panel-update";
 import { useToast } from "@/lib/toast";
 
 const MIN = 12;
 const MAX = 72;
 
 export default function SettingsPage() {
+  const [updating,setUpdating] = useState(false);
   const [oldPass, setOldPass] = useState("");
   const [newPass, setNewPass] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -60,11 +62,12 @@ export default function SettingsPage() {
       <div className="page-head">
         <div>
           <div className="eyebrow">SECURITY / 04</div>
-          <h1>تنظیمات حساب و امنیت</h1>
+          <h1>تنظیمات پنل و حساب</h1>
           <p className="page-intro">مدیریت رمز عبور مدیر سیستم؛ با تغییر رمز، توکن‌های قبلی منقضی می‌شوند.</p>
         </div>
       </div>
 
+      <PanelUpdate onBusy={setUpdating} />
       <section className="panel">
         <div className="section-head">
           <h2>تغییر رمز عبور مدیر</h2>
@@ -74,7 +77,7 @@ export default function SettingsPage() {
         {error && <div role="alert" className="banner error">{error}</div>}
         {success && <div role="status" className="banner ok">{success}</div>}
 
-        <form onSubmit={submit} className="stack">
+        <form onSubmit={submit}><fieldset className="stack" disabled={updating} style={{border:0,padding:0,margin:0,minWidth:0}}>
           <label className="field">
             <span>رمز عبور فعلی</span>
             <input
@@ -114,7 +117,7 @@ export default function SettingsPage() {
           <button className="btn btn-primary" type="submit" disabled={loading} style={{ marginTop: 8 }}>
             {loading ? "در حال ذخیره‌سازی…" : "ثبت و به‌روزرسانی رمز عبور"}
           </button>
-        </form>
+        </fieldset></form>
       </section>
 
       <section className="panel inner">

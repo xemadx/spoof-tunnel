@@ -21,3 +21,5 @@ Validation: scheduler fake-clock quarantine/recovery and reverse-path ambiguity;
 New TUN pairs default to adaptive selection and automatic peer synchronization; upgrade migrations leave existing policy unchanged.
 
 Active/control sources receive reserved probe slots ahead of bulk discovery. Quality without a recent verification expires to unknown and must be rechecked; it is not a permanent healthy label. Authenticated readiness from the other engine is required before smart data dispatch and connected telemetry.
+
+In v0.4.1, pending default content and the checked group/policy selection save atomically through either save button. An empty default is removed from the selected set; at least one nonempty group is required. Invalid requests preserve the previous contents and selection. Per-source reason codes and bounded aggregate pool logs explain unknown reverse paths, timeout/quarantine and stale verification. Ineligible sources are omitted from active-source telemetry.

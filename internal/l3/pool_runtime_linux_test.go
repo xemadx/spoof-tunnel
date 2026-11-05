@@ -19,76 +19,79 @@ func TestSmartPoolRawCarriersAndPeerSync(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("requires raw sockets")
 	}
-	for _, carrier := range []string{"icmp", "udp", "tcp", "ipip", "experimental"} {
-		t.Run(carrier, func(t *testing.T) {
-			a := Config{Role: "local", LocalIP: "127.0.0.1", PeerIP: "127.0.0.2", SpoofSources: []string{"127.1.0.1", "127.1.0.2"}, PeerSpoof: "127.3.0.1", Send: carrier, Receive: carrier, SendPort: 19111, ReceivePort: 19112, PSK: base64.StdEncoding.EncodeToString(make([]byte, 32)), MTU: 1280, PoolPolicy: PoolPolicy{Mode: "adaptive", ProbePPS: 100}, AutoPeerSync: true}
-			b := a
-			b.Role = "remote"
-			b.LocalIP, b.PeerIP = a.PeerIP, a.LocalIP
-			b.SendPort, b.ReceivePort = a.ReceivePort, a.SendPort
-			b.SpoofSources = []string{"127.2.0.1", "127.2.0.2"}
-			ca, err := NewPacketConn(a)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cb, err := NewPacketConn(b)
-			if err != nil {
-				ca.Close()
-				t.Fatal(err)
-			}
-			coa, _ := NewCodec(a.PSK, a.Role)
-			cob, _ := NewCodec(b.PSK, b.Role)
-			ra := newPoolRuntime(a, ca, coa)
-			rb := newPoolRuntime(b, cb, cob)
-			ctx, cancel := context.WithCancel(context.Background())
-			var readers sync.WaitGroup
-			defer func() {
-				cancel()
-				ca.Close()
-				cb.Close()
-				ra.close()
-				rb.close()
-				readers.Wait()
-			}()
-			if err = ra.start(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if err = rb.start(ctx); err != nil {
-				t.Fatal(err)
-			}
-			for _, x := range []struct {
-				c     *PacketConn
-				codec *Codec
-				r     *poolRuntime
-			}{{ca, coa, ra}, {cb, cob, rb}} {
-				readers.Add(1)
-				go func(c *PacketConn, codec *Codec, r *poolRuntime) {
-					defer readers.Done()
-					for {
-						frame, source, _, err := c.receivePacket(true)
-						if err != nil {
-							return
-						}
-						kind, data, err := codec.Open(frame)
-						if err == nil && kind == 5 {
-							r.receiveProbe(data, source)
-						}
-						if err == nil && kind == 4 {
-							r.receive(data, source)
-						}
-					}
-				}(x.c, x.codec, x.r)
-			}
-			deadline := time.Now().Add(10 * time.Second)
-			for time.Now().Before(deadline) {
-				av, bv := ra.snapshot(0, 50, ""), rb.snapshot(0, 50, "")
-				if av.Pool.Healthy == 2 && bv.Pool.Healthy == 2 && av.OurSourcesAccepted && bv.OurSourcesAccepted && av.Peer.Count == 2 && bv.Peer.Count == 2 {
-					return
+	for _, send := range []string{"icmp", "udp", "tcp", "ipip", "experimental"} {
+		for _, receive := range []string{"icmp", "udp", "tcp", "ipip", "experimental"} {
+			t.Run(send+"/"+receive, func(t *testing.T) {
+				a := Config{Role: "local", LocalIP: "127.0.0.1", PeerIP: "127.0.0.2", SpoofSources: []string{"127.1.0.1", "127.1.0.2"}, PeerSpoof: "127.3.0.1", Send: send, Receive: receive, SendPort: 19111, ReceivePort: 19112, PSK: base64.StdEncoding.EncodeToString(make([]byte, 32)), MTU: 1280, PoolPolicy: PoolPolicy{Mode: "adaptive", ProbePPS: 100}, AutoPeerSync: true}
+				b := a
+				b.Role = "remote"
+				b.Send, b.Receive = a.Receive, a.Send
+				b.LocalIP, b.PeerIP = a.PeerIP, a.LocalIP
+				b.SendPort, b.ReceivePort = a.ReceivePort, a.SendPort
+				b.SpoofSources = []string{"127.2.0.1", "127.2.0.2"}
+				ca, err := NewPacketConn(a)
+				if err != nil {
+					t.Fatal(err)
 				}
-				time.Sleep(20 * time.Millisecond)
-			}
-			t.Fatalf("bilateral discovery/sync failed: A=%+v B=%+v", ra.snapshot(0, 50, ""), rb.snapshot(0, 50, ""))
-		})
+				cb, err := NewPacketConn(b)
+				if err != nil {
+					ca.Close()
+					t.Fatal(err)
+				}
+				coa, _ := NewCodec(a.PSK, a.Role)
+				cob, _ := NewCodec(b.PSK, b.Role)
+				ra := newPoolRuntime(a, ca, coa)
+				rb := newPoolRuntime(b, cb, cob)
+				ctx, cancel := context.WithCancel(context.Background())
+				var readers sync.WaitGroup
+				defer func() {
+					cancel()
+					ca.Close()
+					cb.Close()
+					ra.close()
+					rb.close()
+					readers.Wait()
+				}()
+				if err = ra.start(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if err = rb.start(ctx); err != nil {
+					t.Fatal(err)
+				}
+				for _, x := range []struct {
+					c     *PacketConn
+					codec *Codec
+					r     *poolRuntime
+				}{{ca, coa, ra}, {cb, cob, rb}} {
+					readers.Add(1)
+					go func(c *PacketConn, codec *Codec, r *poolRuntime) {
+						defer readers.Done()
+						for {
+							frame, source, _, err := c.receivePacket(true)
+							if err != nil {
+								return
+							}
+							kind, data, err := codec.Open(frame)
+							if err == nil && kind == 5 {
+								r.receiveProbe(data, source)
+							}
+							if err == nil && kind == 4 {
+								r.receive(data, source)
+							}
+						}
+					}(x.c, x.codec, x.r)
+				}
+				deadline := time.Now().Add(10 * time.Second)
+				for time.Now().Before(deadline) {
+					av, bv := ra.snapshot(0, 50, ""), rb.snapshot(0, 50, "")
+					if av.Pool.Healthy == 2 && bv.Pool.Healthy == 2 && av.OurSourcesAccepted && bv.OurSourcesAccepted && av.PeerReady && bv.PeerReady && av.Peer.Count == 2 && bv.Peer.Count == 2 {
+						return
+					}
+					time.Sleep(20 * time.Millisecond)
+				}
+				t.Fatalf("bilateral discovery/sync failed: A=%+v B=%+v", ra.snapshot(0, 50, ""), rb.snapshot(0, 50, ""))
+			})
+		}
 	}
 }
 

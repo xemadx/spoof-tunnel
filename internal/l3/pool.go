@@ -47,6 +47,7 @@ func (p PoolPolicy) Validate() error {
 }
 
 type SourceQuality struct {
+	Reason       string  `json:"reason,omitempty"`
 	IP           string  `json:"ip"`
 	State        string  `json:"state"`
 	RTTMs        float64 `json:"rtt_ms"`
@@ -257,6 +258,7 @@ func (p *SourcePool) NextProbe(now time.Time) (string, net.IP) {
 		return "", nil
 	}
 	if p.states[i].State == "quarantined" {
+		p.states[i].Reason = "cooldown_retest"
 		p.states[i].recent = 0
 		p.states[i].observations = 0
 		p.states[i].Failures = 0
@@ -275,6 +277,9 @@ func (p *SourcePool) NextProbe(now time.Time) (string, net.IP) {
 	s.Probes++
 	if !s.ready {
 		s.State = "testing"
+		if s.Reason != "cooldown_retest" {
+			s.Reason = "awaiting_confirmation"
+		}
 	}
 	s.RetryAt = 0
 	return id, append(net.IP(nil), p.ips[i]...)
@@ -342,8 +347,10 @@ func (p *SourcePool) Acknowledge(token, observed string, now time.Time) bool {
 	s.validUntil = now.Add(lifetime)
 	if s.streak >= 2 || s.ready {
 		s.State = "healthy"
+		s.Reason = ""
 		if bits.OnesCount8(s.recent) > 0 {
 			s.State = "suspect"
+			s.Reason = "recent_probe_loss"
 		}
 		if !s.ready {
 			s.ready = true
@@ -354,6 +361,7 @@ func (p *SourcePool) Acknowledge(token, observed string, now time.Time) bool {
 		p.schedule(probe.index, now.Add(10*time.Second))
 	} else {
 		s.State = "testing"
+		s.Reason = "awaiting_confirmation"
 		p.schedule(probe.index, now.Add(100*time.Millisecond))
 	}
 	return true
@@ -379,6 +387,7 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 		s.ready = false
 		s.streak = 0
 		s.State = "unknown"
+		s.Reason = "verification_expired"
 		if !s.pending {
 			p.schedule(i, now)
 		}
@@ -395,6 +404,7 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 		s := &p.states[probe.index]
 		s.pending = false
 		if !reverseFresh {
+			s.Reason = "reverse_unconfirmed"
 			if !s.ready {
 				s.State = "unknown"
 			}
@@ -402,6 +412,10 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 			continue
 		}
 		s.Failures++
+		s.Reason = "probe_timeout"
+		if s.Probes%2 == 0 {
+			s.Reason = "large_probe_timeout"
+		}
 		recordPoolOutcome(s, true)
 		s.streak = 0
 		s.LossPct = .8*s.LossPct + 20
@@ -412,6 +426,9 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 			changed = true
 			p.removeGood(probe.index)
 			s.State = "quarantined"
+			if s.Failures < 3 {
+				s.Reason = "recent_probe_loss"
+			}
 			deadline := now.Add(time.Duration(p.policy.CooldownSeconds) * time.Second)
 			s.RetryAt = deadline.Unix()
 			if deadline.Nanosecond() != 0 {
@@ -432,8 +449,11 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 func (p *SourcePool) View(offset, limit int, filter string) PoolView {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if offset < 0 {
+		offset = 0
+	}
 	v := PoolView{Mode: p.policy.Mode, Total: len(p.states), Offset: offset, Items: []SourceQuality{}}
-	if p.active >= 0 {
+	if p.active >= 0 && (p.policy.Mode == "legacy" || p.states[p.active].ready) {
 		v.Active = p.states[p.active].IP
 	}
 	if limit < 1 || limit > 100 {
@@ -490,6 +510,7 @@ func (p *SourcePool) Restore(deadlines map[string]int64, now time.Time) {
 			deadline := now.Add(time.Duration(remaining) * time.Second)
 			s := &p.states[i]
 			s.State = "quarantined"
+			s.Reason = "restored_quarantine"
 			s.RetryAt = deadline.Unix()
 			if deadline.Nanosecond() != 0 {
 				s.RetryAt++

@@ -79,6 +79,29 @@ PrivateTmp=true
 WantedBy=multi-user.target
 UNIT
 
+# A separate fixed service survives the panel's own stop/restart. It never runs
+# scripts supplied through the API; the worker verifies both release binaries.
+cat > /etc/systemd/system/spoof-panel-update.service <<'UPDATEUNIT'
+[Unit]
+Description=Verified Spoof Panel release update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/spoof-panel/spoof-panel --apply-update
+TimeoutStartSec=18min
+TimeoutStopSec=120
+UMask=0077
+NoNewPrivileges=true
+CapabilityBoundingSet=
+ProtectSystem=strict
+ReadWritePaths=/etc/spoof-panel /opt/spoof-panel
+ProtectHome=true
+ProtectKernelTunables=true
+PrivateTmp=true
+UPDATEUNIT
+
 systemctl daemon-reload
 systemctl enable spoof-panel.service >/dev/null
 systemctl restart spoof-panel.service

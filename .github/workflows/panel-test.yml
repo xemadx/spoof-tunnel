@@ -23,6 +23,7 @@ jobs:
           key: go-v2-${{ runner.os }}-validation-${{ hashFiles('go.mod', 'go.sum', 'panel/backend/go.mod', 'panel/backend/go.sum') }}-${{ github.sha }}
           restore-keys: |
             go-v2-${{ runner.os }}-validation-${{ hashFiles('go.mod', 'go.sum', 'panel/backend/go.mod', 'panel/backend/go.sum') }}-
+            go-v2-${{ runner.os }}-validation-
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -36,23 +37,13 @@ jobs:
         working-directory: panel/frontend
       - run: npm run test:ui
         working-directory: panel/frontend
-      - run: sudo env SPOOF_PANEL_BINARY="$PWD/dist/spoof-panel" python3 scripts/integration_tester_api.py
-      - run: sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" python3 scripts/integration_tester.py
-      - run: sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" python3 scripts/integration_forward.py
-      - run: sudo env SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
-      - name: Smart pools, authenticated sync and one-sided restart
-        run: sudo env SPOOF_SMART_POOL=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
-      - name: Raw source quarantine and pool replay regressions
-        run: sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" go test -race ./internal/l3
-      - run: sudo env SPOOF_MTU_TEST=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
-      - run: sudo env SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_delay.py
-      - name: Adaptive pool on a delayed path (RTT greater than 3 seconds)
-        run: sudo env SPOOF_SMART_POOL=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_delay.py
-      - run: sudo python3 scripts/integration_multipeer.py
-      - run: python3 scripts/smoke_panel.py
-        env:
-          SPOOF_PANEL_BINARY: dist/spoof-panel
-      - run: python3 scripts/test_installer_credentials.py
+      - name: Compile the privileged L3 race-test runner once
+        run: go test -race -c -o dist/l3.test ./internal/l3
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validated-l3-test
+          path: dist/l3.test
+          retention-days: 3
       - name: Share the tested frontend with release jobs
         uses: actions/upload-artifact@v4
         with:
@@ -65,3 +56,71 @@ jobs:
         with:
           name: validated-linux-amd64
           path: dist/spoof-tunnel-linux-amd64.tar.gz
+
+  network:
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [carriers, smart, diagnostics, multipeer, raw]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: validated-linux-amd64
+          path: packages
+      - name: Unpack the exact binaries that passed validation
+        run: |
+          mkdir -p dist
+          tar -xzf packages/spoof-tunnel-linux-amd64.tar.gz -C dist --strip-components=1
+          (cd dist && sha256sum -c SHA256SUMS)
+      - uses: actions/download-artifact@v4
+        if: matrix.suite == 'raw'
+        with:
+          name: validated-l3-test
+          path: dist
+      - name: Privileged L3 race regressions on all carrier pairs
+        if: matrix.suite == 'raw'
+        run: chmod +x dist/l3.test && sudo ./dist/l3.test -test.v
+      - uses: actions/setup-go@v5
+        if: matrix.suite == 'diagnostics'
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/cache@v4
+        if: matrix.suite == 'diagnostics'
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-v2-${{ runner.os }}-validation-${{ hashFiles('go.mod', 'go.sum', 'panel/backend/go.mod', 'panel/backend/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-v2-${{ runner.os }}-validation-${{ hashFiles('go.mod', 'go.sum', 'panel/backend/go.mod', 'panel/backend/go.sum') }}-
+            go-v2-${{ runner.os }}-validation-
+      - name: Full carrier matrix, fragmentation and delay
+        if: matrix.suite == 'carriers'
+        run: |
+          sudo env SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
+          sudo env SPOOF_MTU_TEST=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
+          sudo env SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_delay.py
+      - name: Three smart modes, peer sync, restart and delayed path
+        if: matrix.suite == 'smart'
+        run: |
+          sudo env SPOOF_SMART_POOL=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
+          for mode in round_robin failover; do
+            sudo env SPOOF_SMART_POOL=1 SPOOF_SMART_SMOKE=1 SPOOF_POOL_MODE="$mode" SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_l3.py
+          done
+          sudo env SPOOF_SMART_POOL=1 SPOOF_L3_BINARY="$PWD/dist/spoof-l3" python3 scripts/integration_delay.py
+      - name: Three foreign peers, TXT selection and shared carrier ports
+        if: matrix.suite == 'multipeer'
+        run: sudo python3 scripts/integration_multipeer.py
+      - name: Tester, forwarding, credentials and updater sandbox
+        if: matrix.suite == 'diagnostics'
+        run: |
+          sudo env SPOOF_PANEL_BINARY="$PWD/dist/spoof-panel" python3 scripts/integration_tester_api.py
+          sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" python3 scripts/integration_tester.py
+          sudo env "PATH=$PATH" "GOMODCACHE=$(go env GOMODCACHE)" python3 scripts/integration_forward.py
+          SPOOF_PANEL_BINARY=dist/spoof-panel python3 scripts/smoke_panel.py
+          python3 scripts/test_installer_credentials.py
+          sudo python3 scripts/integration_updater_systemd.py

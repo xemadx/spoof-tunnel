@@ -18,6 +18,7 @@ type PeerPoolView struct {
 	Progress  int    `json:"progress"`
 }
 type PoolRuntimeView struct {
+	AutoPeerSync       bool         `json:"auto_peer_sync"`
 	PeerReady          bool         `json:"peer_ready"`
 	PersistenceError   string       `json:"persistence_error,omitempty"`
 	Pool               PoolView     `json:"pool"`

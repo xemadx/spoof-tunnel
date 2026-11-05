@@ -68,3 +68,13 @@ sudo go test -race ./internal/l3
 ```
 
 The smart matrix transfers actual inner TCP/UDP payloads on five carriers and asymmetric ICMP/TCP, then restarts just one endpoint and verifies recovery. The adaptive delayed-path test uses 3.4-second RTT. These namespace tests establish local behavior; real provider routing/filtering still requires testing the deployed pair.
+
+## v0.4.1 pool, update and log regressions
+
+There are 43 browser scenarios. New cases reproduce clearing the active default while a TXT is only checked locally, both save controls, update confirmation, HTTP disconnect/rollback, a single successful reload with the new header version, retained login, visible percentage, unsupported installs, restored progress, readable log reasons, reconnect replacement and an 800-line burst bound.
+
+Go race tests exercise all three smart dispatch modes through selection, source failure, quarantine, restart, full cooldown and two-response recovery. Reverse outages expire stale quality without blacklisting all sources; ineligible sources disappear from active telemetry. Authenticated raw control now covers all 25 ordered carrier pairs and peer readiness. Real TUN checks cover adaptive links plus round-robin/failover on ICMP/TCP, UDP/IPIP and protocol 253. Three-peer tests import TXT and atomically clear defaults through real HTTP before starting the cores, on all five carriers.
+
+The updater suite builds two API/SQLite executables and replaces/restarts real processes using isolated service hooks. It verifies a successful upgrade, unchanged JWT/password/group data, database-and-binary rollback after an injected migration/startup failure, checksum rejection, unsafe archive rejection, version mismatch, download bounds and real byte progress. A committed WAL backup test verifies snapshot contents. The production systemd sandbox boundary is exercised separately with unique fixture services (`scripts/integration_updater_systemd.py`), without modifying any installed panel. Log tests verify atomic history/subscription boundaries and slow-subscriber resynchronization.
+
+The workflow builds/validates once, shares the exact binary and privileged race-test artifacts, and runs independent carrier, smart-policy, raw, diagnostics and multi-peer suites in parallel. Every network job must pass before tagged packages are released. ARM64 packages are cross-compiled and their architecture/checksums checked; no native ARM64 runtime test is claimed.

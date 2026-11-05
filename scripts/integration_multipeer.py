@@ -11,8 +11,8 @@ def run(*args,**options):
     if result.returncode: raise RuntimeError(f'{args}: {result.stdout} {result.stderr}')
     return result
 API_CODE='''import json,sys,urllib.request,urllib.error
-base,token,method,path,payload=sys.argv[1:]
-headers={'Content-Type':'application/json'}
+base,token,method,path,payload=sys.argv[1:6]
+headers={'Content-Type':sys.argv[6] if len(sys.argv)>6 else 'application/json'}
 if token:headers['Authorization']='Bearer '+token
 req=urllib.request.Request(base+'/api'+path,data=None if payload=='null' else payload.encode(),headers=headers,method=method)
 try:
@@ -52,6 +52,14 @@ def main():
             response=json.loads(run('ip','netns','exec',NAMES[0],'python3','-c',API_CODE,base,token,method,path,json.dumps(payload),timeout=15).stdout)
             assert response[0]==expected,(method,path,response)
             return response[1]
+        def multipart(path,fields,content):
+            boundary='spoof-fixture-boundary'
+            body=f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="fixture.txt"\r\nContent-Type: text/plain\r\n\r\n{content}\r\n'
+            for name,value in fields.items():body+=f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'
+            body+=f'--{boundary}--\r\n'
+            response=json.loads(run('ip','netns','exec',NAMES[0],'python3','-c',API_CODE,base,token,'POST',path,body,'multipart/form-data; boundary='+boundary,timeout=15).stdout)
+            assert response[0] in [200,201],response
+            return response[1]
         def spawn(namespace,args):
             with (directory/f'process-{len(PROCESSES)}.log').open('w') as output:
                 process=subprocess.Popen(['ip','netns','exec',namespace,*args],stdout=output,stderr=output)
@@ -87,6 +95,14 @@ def main():
                     config=dict(role='remote',local_ip=remote['local_ip'],peer_ip=remote['client_ip'],spoof_source=remote['spoof_ip'],peer_spoof=remote['peer_spoof_ip'],send=remote['send_transport'],receive=remote['recv_transport'],send_port=remote['client_port'],receive_port=remote['listen_port'],interface=remote['tun_interface'],address=remote['tun_address'],peer_address=remote['tun_peer'],mtu=remote['tun_mtu'],psk=remote['psk'],pool_policy=dict(mode=remote['pool_mode'],probe_pps=remote['pool_pps']),auto_peer_sync=remote['auto_peer_sync'],control_socket=str(directory/f'remote-{index}.sock'))
                     path=directory/f'{carrier}-{index}.json';path.write_text(json.dumps(config));os.chmod(path,0o600)
                     cores.append(spawn(NAMES[index+1],[CORE,'--config',str(path)]))
+                    # Exercise the exact UI bug through real HTTP, then run the core
+                    # using its compiled TXT set and synchronized receiver allowlist.
+                    group=multipart(f'/instances/{ident}/pools/upload',{},'198.51.100.10\n198.51.100.11\n')
+                    current=api('GET',f'/instances/{ident}')['instance']
+                    selection=json.dumps(dict(ids=[group['id']],mode='adaptive',probe_pps=25,auto_peer_sync=True))
+                    multipart(f'/instances/{ident}/pools/default',dict(updated_at=current['updated_at'],settings=selection),'')
+                    metadata=api('GET',f'/instances/{ident}/pools')
+                    assert next(f for f in metadata['files'] if f['kind']=='default')['count']==0 and metadata['total']==2,metadata
                     api('POST',f'/instances/{ident}/start',{})
                     api('POST',f'/instances/{ident}/forwards',dict(listen_port=11001+index,target_port=19001,protocol='tcp',enabled=True),expected=201)
                 assert len(keys)==3 and len(interfaces)==3
