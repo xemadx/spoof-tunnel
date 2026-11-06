@@ -73,13 +73,25 @@ exit 0
 SHIM
   cat > "$bin/curl" <<'SHIM'
 #!/usr/bin/env bash
+echo "curl $*" >> "$MOCK_LOG"
 for a in "$@"; do
   case "$a" in
     *api.ipify.org*|*ifconfig.me*) printf '%s' "${MOCK_EGRESS_IP:-$FAKE_IP}"; exit 0 ;;
   esac
 done
 if [[ "$*" == *--resolve* ]]; then
-  if [[ "${MOCK_CURL_HEALTH:-ok}" == fail ]]; then exit 1; fi
+  if [[ "${MOCK_REQUIRE_DIRECT:-0}" == 1 && ( "$*" != *"--noproxy *"* || "$1" != -q ) ]]; then
+    echo 'proxy intercepted the health request' >&2; exit 5
+  fi
+  count_file="${MOCK_LOG}.health-count"; count=0
+  [[ -f "$count_file" ]] && count=$(cat "$count_file")
+  count=$((count + 1)); printf '%s' "$count" > "$count_file"
+  if (( count <= ${MOCK_HEALTH_DELAY:-0} )); then echo 'connection refused during startup' >&2; exit 7; fi
+  case "${MOCK_CURL_HEALTH:-ok}" in
+    fail) echo 'health endpoint unavailable' >&2; exit 1 ;;
+    badcert) echo 'certificate verify failed' >&2; exit 60 ;;
+    html) printf '<html>{"version":"not-a-health-response"}</html>'; exit 0 ;;
+  esac
   printf '{"version":"v0.4.7"}'
   exit 0
 fi
@@ -124,6 +136,11 @@ if [[ "$*" == *-enddate* ]]; then
 fi
 exec /usr/bin/openssl "$@"
 SHIM
+  cat > "$bin/sleep" <<'SHIM'
+#!/usr/bin/env bash
+# Simulated HTTP attempts have no real startup latency.
+exit 0
+SHIM
   chmod +x "$bin"/*
 }
 
@@ -141,6 +158,10 @@ case "$1" in
   --tls-status)
     enabled=$(get enabled); enabled=${enabled:-0}
     valid=0; [[ "$enabled" == 1 ]] && valid=1
+    if [[ "${MOCK_STATUS_NUMERIC:-0}" != 1 ]]; then
+      [[ "$enabled" == 1 ]] && enabled=true || enabled=false
+      [[ "$valid" == 1 ]] && valid=true || valid=false
+    fi
     printf 'enabled=%s\nvalid=%s\ndomain=%s\nexpires_unix=%s\nport=18443\nweb_path=abc123\ncert_file=%s\nkey_file=%s\n' \
       "$enabled" "$valid" "$(get domain)" "$(get expires_unix)" "$(get cert_file)" "$(get key_file)"
     ;;
@@ -207,7 +228,7 @@ PYEOF
 write_tls_runner() {
   cat > "$1/run_tls.sh" <<'SHEOF'
 #!/usr/bin/env bash
-set +u
+set -eo pipefail
 # Auto-export: the env file sets MOCK_* flags the PATH shims (child
 # processes) must see.
 set -a
@@ -222,6 +243,7 @@ bash -n "$1/tls_funcs.sh" || { echo "extracted TLS block fails bash -n"; exit 1;
 source "$1/tls_funcs.sh"
 spoof_maybe_tls > "$1/out.txt" 2>&1
 echo "SPOOF_TLS_ON=$SPOOF_TLS_ON" >> "$1/out.txt"
+printf '║  URL:      http://203.0.113.10:18443/abc123/ ║\n' | spoof_tls_setup_url "$SPOOF_TLS_URL" >> "$1/out.txt"
 echo "STATE: $(cat "$SPOOF_DATA_DIR/tls-test-state" 2>/dev/null | tr '\n' ' ')" >> "$1/out.txt"
 SHEOF
   chmod +x "$1/run_tls.sh"
@@ -242,6 +264,7 @@ run_case() {
   export SPOOF_TTY="$dir/answers"
   : > "$dir/answers"
   : > "$data/tls-test-state"
+  printf 'URL: http://203.0.113.30:18443/abc123/\nUsername: preserved-user\nPassword: unchanged (not stored)\n' > "$data/credentials.txt"
   # shellcheck disable=SC1090
   "$setup" "$dir"
   if grep -q '^NO_PTY=1' "$dir/env" 2>/dev/null; then
@@ -269,6 +292,9 @@ check_scenario_1() {
   check "scenario 1: HTTPS enabled reported" contains "$dir/out.txt" "✓ HTTPS enabled"
   check "scenario 1: SPOOF_TLS_ON=1" contains "$dir/out.txt" "SPOOF_TLS_ON=1"
   check "scenario 1: state enabled" contains "$dir/out.txt" "enabled=1"
+  check "scenario 1: saved URL uses certificate domain" contains "$dir/data/credentials.txt" "URL: https://$DOMAIN:18443/abc123/"
+  check "scenario 1: saved account is preserved" contains "$dir/data/credentials.txt" "Username: preserved-user"
+  check "scenario 1: credentials box uses certificate domain" contains "$dir/out.txt" "║  URL:      https://$DOMAIN:18443/abc123/"
 }
 scenario_2_setup() {
   printf 'enabled=1\ndomain=%s\nexpires_unix=1893456000\n' "$DOMAIN" > "$1/data/tls-test-state"
@@ -388,6 +414,31 @@ check_scenario_14() {
   check "scenario 14: HTTPS enabled" contains "$dir/out.txt" "✓ HTTPS enabled"
 }
 
+scenario_15_setup() { scenario_2_setup "$1"; echo 'MOCK_STATUS_NUMERIC=1' > "$1/env"; }
+check_scenario_15() {
+  check 'scenario 15: numeric legacy status still recognized' contains "$1/out.txt" 'SPOOF_TLS_ON=1'
+  check 'scenario 15: legacy status does not reissue' not_contains "$2" 'certbot'
+}
+scenario_16_setup() { scenario_1_setup "$1"; echo 'MOCK_HEALTH_DELAY=3' > "$1/env"; }
+check_scenario_16() {
+  check 'scenario 16: waits for HTTPS listener after systemd becomes active' contains "$1/out.txt" '✓ HTTPS enabled'
+  check 'scenario 16: delayed startup is not disabled' not_contains "$1/out.txt" 'TLS disabled'
+  check 'scenario 16: actual health endpoint retried' contains "${2}.health-count" '4'
+}
+scenario_17_setup() { scenario_1_setup "$1"; printf 'MOCK_REQUIRE_DIRECT=1\nHTTPS_PROXY=http://127.0.0.1:9\n' > "$1/env"; }
+check_scenario_17() {
+  check 'scenario 17: health check ignores proxy settings' contains "$1/out.txt" '✓ HTTPS enabled'
+  check 'scenario 17: health request explicitly bypasses proxies' contains "$2" '--noproxy *'
+}
+scenario_18_setup() { scenario_1_setup "$1"; echo 'MOCK_CURL_HEALTH=html' > "$1/env"; }
+check_scenario_18() { check 'scenario 18: HTML mentioning version is not health JSON' contains "$1/out.txt" 'HTTPS verification failed'; }
+scenario_19_setup() { scenario_1_setup "$1"; echo 'MOCK_CURL_HEALTH=badcert' > "$1/env"; }
+check_scenario_19() {
+  check 'scenario 19: trust failure is explained' contains "$1/out.txt" 'Certificate trust verification failed'
+  check 'scenario 19: no insecure certificate bypass' not_contains "$2" 'curl -k'
+  check 'scenario 19: invalid trusted TLS rolls back' contains "$1/out.txt" 'enabled=0'
+}
+
 run_case "scenario_1" scenario_1_setup
 run_case "scenario_2" scenario_2_setup
 run_case "scenario_3" scenario_3_setup
@@ -402,6 +453,12 @@ run_case "scenario_11" scenario_11_setup
 run_case "scenario_12" scenario_12_setup
 run_case "scenario_13" scenario_13_setup
 run_case "scenario_14" scenario_14_setup
+run_case "scenario_15" scenario_15_setup
+run_case "scenario_16" scenario_16_setup
+run_case "scenario_17" scenario_17_setup
+run_case "scenario_18" scenario_18_setup
+run_case "scenario_19" scenario_19_setup
+
 
 echo ""
 echo "TLS installer self-test: $PASSED passed, $FAILED failed"

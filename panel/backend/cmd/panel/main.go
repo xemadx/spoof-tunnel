@@ -339,12 +339,10 @@ func main() {
 	// loudly and falls back to plain HTTP, and the installer can fix it
 	// by re-running. The loader re-reads the files on every handshake,
 	// so a certbot renewal takes effect with no restart.
-	scheme := "http"
 	var tlsLoader *tlsconf.Loader
 	tlsSt := tlsconf.Evaluate(dataDir)
 	if tlsSt.Enabled {
 		if tlsSt.Valid {
-			scheme = "https"
 			tlsLoader = tlsconf.NewLoader(tlsSt.CertFile, tlsSt.KeyFile)
 			if time.Until(tlsSt.Expires) < 30*24*time.Hour {
 				log.Printf("WARNING: TLS certificate for %s expires on %s; renew it (certbot renew) before then", tlsSt.Domain, tlsSt.Expires.Format("2006-01-02"))
@@ -354,7 +352,7 @@ func main() {
 		}
 	}
 
-	fullURL := fmt.Sprintf("%s://%s:%d/%s/", scheme, ip, listenPort, webPath)
+	fullURL := panelAccessURL(ip, listenPort, webPath, tlsSt)
 	log.Printf("╔══════════════════════════════════════════════════════════════════════╗")
 	log.Printf("║  %-68s║", "Spoof Tunnel "+panelVersion)
 	log.Printf("║  %-68s║", fullURL)
@@ -549,11 +547,7 @@ func runSetup(database *gorm.DB, username, password string, port int, dataDir st
 	}
 
 	ip := detectServerIP()
-	scheme := "http"
-	if st := tlsconf.Evaluate(dataDir); st.Enabled && st.Valid {
-		scheme = "https"
-	}
-	panelURL := fmt.Sprintf("%s://%s:%d/%s/", scheme, ip, port, webPath)
+	panelURL := panelAccessURL(ip, port, webPath, tlsconf.Evaluate(dataDir))
 
 	// Keep connection information for root, never the plaintext password.
 	credsPath := filepath.Join(dataDir, "credentials.txt")
@@ -632,4 +626,15 @@ func printTLSStatus(database *gorm.DB, dataDir string) {
 	fmt.Printf("expires_unix=%s\n", expiresUnix)
 	fmt.Printf("port=%s\n", port)
 	fmt.Printf("web_path=%s\n", prefix)
+}
+
+// The certificate domain is the usable HTTPS host. An IP URL would fail
+// hostname verification even when the panel serves the right certificate.
+func panelAccessURL(host string, port int, prefix string, st tlsconf.Status) string {
+	scheme := "http"
+	if st.Enabled && st.Valid {
+		scheme = "https"
+		host = st.Domain
+	}
+	return fmt.Sprintf("%s://%s/%s/", scheme, net.JoinHostPort(host, fmt.Sprint(port)), strings.Trim(prefix, "/"))
 }

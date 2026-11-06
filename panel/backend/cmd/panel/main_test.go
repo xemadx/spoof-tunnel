@@ -3,7 +3,28 @@ package main
 import (
 	"net"
 	"testing"
+
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/tlsconf"
 )
+
+func TestPanelAccessURL(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status tlsconf.Status
+		want   string
+	}{
+		{"plain HTTP", tlsconf.Status{}, "http://192.0.2.10:18443/secret/"},
+		{"valid TLS uses certificate domain", tlsconf.Status{Enabled: true, Valid: true, Domain: "panel.example.com"}, "https://panel.example.com:18443/secret/"},
+		{"disabled TLS", tlsconf.Status{Valid: true, Domain: "panel.example.com"}, "http://192.0.2.10:18443/secret/"},
+		{"invalid TLS falls back", tlsconf.Status{Enabled: true, Domain: "panel.example.com"}, "http://192.0.2.10:18443/secret/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := panelAccessURL("192.0.2.10", 18443, "/secret/", tc.status); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 // The panel URL and the installer's DNS check must use the inbound IP.
 // An outbound lookup only sees the egress address, which differs behind

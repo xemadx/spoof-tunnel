@@ -25,10 +25,11 @@ done
 #     prompt device (used by the installer self-test).
 # A certificate is per server: each server needs its own domain pointing
 # at its own public IP. Wildcards are not supported (HTTP-01 cannot
-# prove one); the panel always keeps its configured port, only the
-# scheme changes from http:// to https://.
+# prove one); the panel keeps its port and path, and advertises the
+# certificate domain with https:// instead of the HTTP IP address.
 SPOOF_TTY="${SPOOF_TTY:-/dev/tty}"
 SPOOF_TLS_ON=0
+SPOOF_TLS_URL=""
 
 spoof_tls_status() {
   SPOOF_DATA_DIR="${SPOOF_DATA_DIR:-/etc/spoof-panel}" "${SPOOF_PANEL_BIN:-/opt/spoof-panel/spoof-panel}" --tls-status 2>/dev/null || echo 'enabled=0'
@@ -37,6 +38,58 @@ spoof_tls_status() {
 spoof_tls_val() {
   # spoof_tls_val <key> <status-output> — value after the first '='.
   printf '%s\n' "$2" | grep "^$1=" | cut -d= -f2- | head -n 1
+}
+
+spoof_tls_true() { [[ "$1" == true || "$1" == 1 ]]; }
+
+spoof_tls_publish_url() {
+  local domain="$1" port="$2" prefix="${3#/}"
+  prefix="${prefix%/}"
+  SPOOF_TLS_URL="https://$domain:$port/$prefix/"
+  local creds="${SPOOF_DATA_DIR:-/etc/spoof-panel}/credentials.txt" tmp line
+  [[ -f "$creds" ]] || return 0
+  tmp=$(mktemp "${creds}.XXXXXX") || return 1
+  chmod 600 "$tmp" || { rm -f "$tmp"; return 1; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == URL:* ]]; then printf 'URL: %s\n' "$SPOOF_TLS_URL"; else printf '%s\n' "$line"; fi
+  done < "$creds" > "$tmp"
+  mv -f "$tmp" "$creds"
+}
+
+spoof_tls_setup_url() {
+  local url="$1" line
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" == '║  URL:'* ]]; then printf '║  URL:      %-58s║\n' "$url"; else printf '%s\n' "$line"; fi
+  done
+}
+
+spoof_tls_verify() {
+  local domain="$1" port="$2" prefix="${3#/}" body code attempt log
+  prefix="${prefix%/}"
+  [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 && -n "$prefix" ]] || { echo '  ! Invalid local HTTPS health address.'; return 1; }
+  log=$(mktemp) || return 1
+  local deadline=$((SECONDS + 45))
+  # systemd Type=simple becomes active before database/tunnel startup completes.
+  # Wait for the actual trusted HTTPS endpoint, not merely an active process.
+  for attempt in $(seq 1 30); do
+    code=0
+    body=$(curl -q -4 --noproxy '*' --resolve "$domain:$port:127.0.0.1" -fsS --connect-timeout 1 --max-time 3 "https://$domain:$port/$prefix/api/health" 2>"$log") || code=$?
+    if [[ "$code" == 0 && "$body" =~ ^[[:space:]]*\{[[:space:]]*\"version\"[[:space:]]*:[[:space:]]*\"[^\"]+\"[[:space:]]*\}[[:space:]]*$ ]]; then
+      rm -f "$log"; return 0
+    fi
+    # A broken certificate is not a startup delay. Never bypass TLS validation.
+    if [[ "$code" == 60 || "$code" == 77 ]]; then
+      echo '  ! Certificate trust verification failed; check ca-certificates and the full certificate chain.'
+      break
+    fi
+    (( SECONDS >= deadline )) && break
+    sleep 1
+  done
+  echo "  ! Local HTTPS health check failed (curl exit $code)."
+  [[ "$code" == 0 ]] && echo '    Expected a JSON version response from the panel health endpoint.'
+  sed -n '1,4s/^/    /p' "$log"
+  rm -f "$log"
+  return 1
 }
 
 spoof_tls_expiry_human() {
@@ -135,8 +188,9 @@ spoof_maybe_tls() {
   # Already has a usable certificate: never ask again. Renew early when
   # it expires within 30 days; the panel picks up the renewed files
   # without a restart.
-  if [[ "$enabled" == 1 && "$valid" == 1 ]]; then
+  if spoof_tls_true "$enabled" && spoof_tls_true "$valid"; then
     SPOOF_TLS_ON=1
+    spoof_tls_publish_url "$domain" "$port" "$prefix" || echo '  ! Could not refresh the saved panel URL.'
     if [[ -n "$expires_unix" && $((expires_unix - now)) -lt 2592000 ]]; then
       echo '  TLS certificate expires soon; attempting renewal…'
       if command -v certbot >/dev/null && certbot renew --non-interactive -q 2>/dev/null; then
@@ -265,15 +319,7 @@ spoof_maybe_tls() {
   status=$(spoof_tls_status)
   port=$(spoof_tls_val port "$status")
   prefix=$(spoof_tls_val web_path "$status")
-  local url="https://$domain:$port/$prefix/api/health" verified=0
-  if curl --resolve "$domain:$port:127.0.0.1" -fsS --max-time 10 "$url" 2>/dev/null | grep -q '"version"'; then
-    verified=1
-  elif curl -k --resolve "$domain:$port:127.0.0.1" -fsS --max-time 10 "$url" 2>/dev/null | grep -q '"version"'; then
-    echo '  ! The panel answers HTTPS, but this server does not trust the certificate chain (old CA store).'
-    echo '    Browsers will trust it. Update the CA store: apt-get install -y ca-certificates'
-    verified=1
-  fi
-  if [[ "$verified" != 1 ]]; then
+  if ! spoof_tls_verify "$domain" "$port" "$prefix"; then
     echo '  ! HTTPS verification failed; disabling TLS and keeping the panel on HTTP.'
     SPOOF_DATA_DIR="${SPOOF_DATA_DIR:-/etc/spoof-panel}" "${SPOOF_PANEL_BIN:-/opt/spoof-panel/spoof-panel}" --disable-tls
     systemctl restart spoof-panel.service || true
@@ -282,7 +328,7 @@ spoof_maybe_tls() {
 
   local expiry
   expiry=$(openssl x509 -in "/etc/letsencrypt/live/$domain/fullchain.pem" -noout -enddate 2>/dev/null | cut -d= -f2-)
-  sed -i 's|^URL: http://|URL: https://|' "${SPOOF_DATA_DIR:-/etc/spoof-panel}/credentials.txt" 2>/dev/null || true
+  spoof_tls_publish_url "$domain" "$port" "$prefix" || echo '  ! Could not refresh the saved panel URL.'
   SPOOF_TLS_ON=1
   echo ''
   echo '  ✓ HTTPS enabled'
@@ -400,7 +446,7 @@ spoof_maybe_tls
 # The credentials box captured earlier still shows http:// when TLS was
 # just enabled; fix the scheme so the printed URL is the real one.
 if [[ "$SPOOF_TLS_ON" == 1 ]]; then
-  setup_output=${setup_output//URL: http:/URL: https:}
+  setup_output=$(printf '%s\n' "$setup_output" | spoof_tls_setup_url "$SPOOF_TLS_URL")
 fi
 
 panel_version=$(/opt/spoof-panel/spoof-panel --version 2>/dev/null || echo "unknown")
