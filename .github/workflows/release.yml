@@ -56,17 +56,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
           path: packages
           merge-multiple: true
       - run: cd packages && sha256sum *.tar.gz > SHA256SUMS
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-          cache: false
       - name: Sign the release checksums
         run: |
           go run ./cmd/sign-release --key "$SPOOF_RELEASE_SIGNING_KEY" --file packages/SHA256SUMS --out packages/SHA256SUMS.sig
