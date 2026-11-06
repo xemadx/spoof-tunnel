@@ -63,6 +63,13 @@ test('connection card exposes real endpoint and tunnel addresses', async ({ page
  await expect(page.locator('.conn-grid .v').filter({ hasText: '192.0.2.2' })).toBeVisible();
  await expect(page.locator('.conn-grid .v').filter({ hasText: '10.77.0.1/30' })).toBeVisible();
 });
+test('watchdog restarts are shown on the connection card', async ({ page }) => {
+ await mock(page);
+ const now = Math.floor(Date.now() / 1000);
+ await page.route('**/api/dashboard', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ total: 1, running_count: 1, stopped_count: 0, error_count: 0, instances: [{ id: 1, name: 'Review tunnel', mode: 'local', engine: 'tun', status: 'running', uptime: 30, telemetry: { peer_connected: true, tx_bytes: 1024, rx_bytes: 2048, drops: 0, last_peer: now, rtt_ms: 85, watchdog_restarts: 2, watchdog_last_restart: now - 60 } }] }) }));
+ await page.goto(prefix + '/dashboard/tunnels/');
+ await expect(page.getByText(/بازنشانی خودکار پس از قطعی: ۲ بار/)).toBeVisible();
+});
 test('incorrect login preserves input and shows the actual error', async ({ page }) => {
  await mock(page); await page.goto(prefix + '/login/');
  await page.getByLabel('نام کاربری').fill('bad-user'); await page.getByLabel('رمز عبور', { exact: true }).fill('bad-password');

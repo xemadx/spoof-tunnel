@@ -41,7 +41,7 @@ type Instance = {
   enabled: boolean;
 };
 
-type Telemetry = { peer_connected: boolean; tx_bytes: number; rx_bytes: number; rtt_ms?: number; drops: number };
+type Telemetry = { peer_connected: boolean; tx_bytes: number; rx_bytes: number; rtt_ms?: number; drops: number; watchdog_restarts?: number; watchdog_last_restart?: number };
 
 const LABEL: Record<string, string> = {
   running: "در حال اجرا",
@@ -263,6 +263,9 @@ export default function TunnelsPage() {
                   <span className="mono" dir="ltr">↑ {size(t?.tx_bytes)}  ↓ {size(t?.rx_bytes)}</span>
                   {peer && t?.rtt_ms ? <span className="mono" style={{ color: "var(--accent-cyan)" }}>{Math.round(t.rtt_ms)} ms</span> : null}
                   <span className="mono" dir="ltr">{duration(i.uptime)}</span>
+                  {(t?.watchdog_restarts ?? 0) > 0 && (
+                    <span className="hint">بازنشانی خودکار پس از قطعی: {(t?.watchdog_restarts ?? 0).toLocaleString("fa-IR")} بار{t?.watchdog_last_restart ? ` · آخرین بار ${new Date((t.watchdog_last_restart ?? 0) * 1000).toLocaleTimeString("fa-IR")}` : ""}</span>
+                  )}
                 </div>
                 <div className="row">
                   {i.status === "running" ? (

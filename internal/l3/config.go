@@ -63,6 +63,10 @@ type Stats struct {
 	Drops     uint64  `json:"drops"`
 	LastPeer  int64   `json:"last_peer"`
 	RTTMs     float64 `json:"rtt_ms,omitempty"`
+
+	// Peer-loss watchdog counters, set by the panel manager (not the engine).
+	WatchdogRestarts    int   `json:"watchdog_restarts,omitempty"`
+	WatchdogLastRestart int64 `json:"watchdog_last_restart,omitempty"`
 }
 
 var ifaceName = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,14}$`)

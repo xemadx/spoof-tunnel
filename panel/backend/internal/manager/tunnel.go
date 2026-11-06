@@ -61,6 +61,16 @@ type Instance struct {
 	// Reverse-tunnel forwarders for this instance, by rule ID.
 	fwdMu      sync.Mutex
 	forwarders map[uint]*forward.Forwarder
+
+	// Peer-loss watchdog: restarts a tunnel whose peer stays lost after
+	// it was connected. wdPeerSeen records that the peer was connected
+	// at least once since this process started; wdLostSince marks the
+	// start of the current continuous loss. wdRestarts/wdLastRestart
+	// are cumulative across restarts and are reported in telemetry.
+	wdPeerSeen    bool
+	wdLostSince   time.Time
+	wdLastRestart time.Time
+	wdRestarts    int
 }
 
 func newInstance(id uint) *Instance {
@@ -77,23 +87,30 @@ func newInstance(id uint) *Instance {
 // Manager manages multiple tunnel instances
 type Manager struct {
 	recoveryDelay func(int) time.Duration // fixed at construction; tests may shorten backoff
-	mutationGuard *sync.Mutex
-	db            *gorm.DB
-	binaryPath    string
-	configDir     string
-	instances     map[uint]*Instance
-	mu            sync.RWMutex
+	// Peer-loss watchdog timing; fixed at construction, tests may shorten.
+	watchdogTick      time.Duration
+	watchdogThreshold time.Duration
+	watchdogCooldown  time.Duration
+	mutationGuard     *sync.Mutex
+	db                *gorm.DB
+	binaryPath        string
+	configDir         string
+	instances         map[uint]*Instance
+	mu                sync.RWMutex
 }
 
 // NewManager creates a new multi-instance tunnel manager
 func NewManager(database *gorm.DB, binaryPath, configDir string) *Manager {
 	return &Manager{
-		recoveryDelay: recoveryBackoff,
-		mutationGuard: new(sync.Mutex),
-		db:            database,
-		binaryPath:    binaryPath,
-		configDir:     configDir,
-		instances:     make(map[uint]*Instance),
+		recoveryDelay:     recoveryBackoff,
+		watchdogTick:      watchdogTickInterval,
+		watchdogThreshold: watchdogPeerLossThreshold,
+		watchdogCooldown:  watchdogRestartCooldown,
+		mutationGuard:     new(sync.Mutex),
+		db:                database,
+		binaryPath:        binaryPath,
+		configDir:         configDir,
+		instances:         make(map[uint]*Instance),
 	}
 }
 
@@ -232,6 +249,12 @@ func (m *Manager) startInstance(id uint) (err error) {
 	epoch := inst.epoch
 	inst.done = make(chan struct{})
 	done := inst.done
+	// A new process starts a fresh peer-loss observation window.
+	inst.wdPeerSeen = false
+	inst.wdLostSince = time.Time{}
+	if cfg.Engine == "tun" {
+		go m.watchdogLoop(id, done)
+	}
 	go func() {
 		err := cmd.Wait()
 		// If the tunnel process died on its own, its entry forwarders
@@ -592,6 +615,10 @@ func (m *Manager) Telemetry(id uint) l3.Stats {
 	if s.PoolMode != "" && s.PoolMode != "legacy" {
 		s.Peer = s.Peer && s.PoolReady
 	}
+	s.WatchdogRestarts = inst.wdRestarts
+	if !inst.wdLastRestart.IsZero() {
+		s.WatchdogLastRestart = inst.wdLastRestart.Unix()
+	}
 	return s
 }
 
@@ -700,6 +727,123 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 func (m *Manager) MutationGuard() *sync.Mutex { return m.mutationGuard }
 
 const maxRecoveryAttempts = 8
+
+// Peer-loss watchdog: how often the peer state is checked, how long the
+// peer must stay lost (after having been connected) before the tunnel is
+// restarted, and how long to wait after a watchdog restart before another
+// one may fire. The threshold is deliberately longer than the engine's
+// own self-heal window (pool quality expires after ~48s and the pool then
+// re-discovers sources), so the watchdog only fires when self-healing has
+// actually failed instead of interrupting it.
+const (
+	watchdogTickInterval      = 5 * time.Second
+	watchdogPeerLossThreshold = 120 * time.Second
+	watchdogRestartCooldown   = 5 * time.Minute
+)
+
+// watchdogTick records one peer observation and reports whether the tunnel
+// should be restarted now. It fires only on a connected-then-lost
+// transition that lasts the full threshold: a tunnel that never connected
+// (initial discovery, wrong PSK, peer down) is never restarted, and after
+// a watchdog restart a fresh connection is required before another one
+// may fire, so a permanently dead peer cannot flap the tunnel forever.
+// Called with no locks held.
+func (inst *Instance) watchdogTick(now time.Time, peerConnected bool, threshold, cooldown time.Duration) bool {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	if peerConnected {
+		inst.wdPeerSeen = true
+		inst.wdLostSince = time.Time{}
+		return false
+	}
+	if !inst.wdPeerSeen {
+		return false
+	}
+	if inst.wdLostSince.IsZero() {
+		inst.wdLostSince = now
+		return false
+	}
+	if now.Sub(inst.wdLostSince) < threshold {
+		return false
+	}
+	if !inst.wdLastRestart.IsZero() && now.Sub(inst.wdLastRestart) < cooldown {
+		return false
+	}
+	// Fire once: require a fresh connection before the next restart.
+	inst.wdPeerSeen = false
+	inst.wdLostSince = time.Time{}
+	return true
+}
+
+// watchdogLoop watches one running tunnel and restarts it when its peer
+// stays lost past the threshold. It exits when the process ends (done
+// closes); startInstance spawns a fresh loop for the new process. The
+// restart runs in its own goroutine so a slow stop/start never blocks
+// the tick loop, and watchdogRestart serializes with any manual action.
+func (m *Manager) watchdogLoop(id uint, done chan struct{}) {
+	tick := time.NewTicker(m.watchdogTick)
+	defer tick.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case now := <-tick.C:
+			inst := m.getInstance(id)
+			inst.mu.Lock()
+			running := inst.status == StatusRunning
+			inst.mu.Unlock()
+			if !running {
+				continue
+			}
+			if !inst.watchdogTick(now, m.Telemetry(id).Peer, m.watchdogThreshold, m.watchdogCooldown) {
+				continue
+			}
+			inst.mu.Lock()
+			inst.wdRestarts++
+			inst.wdLastRestart = now
+			restarts := inst.wdRestarts
+			inst.mu.Unlock()
+			log.Printf("[manager] instance %d peer lost for %s; automatic restart (watchdog #%d)", id, m.watchdogThreshold, restarts)
+			streamLogs(inst, strings.NewReader(fmt.Sprintf("[watchdog] peer lost for %s; restarting tunnel automatically (restart #%d)\n", m.watchdogThreshold, restarts)))
+			go func() {
+				if err := m.watchdogRestart(id); err != nil {
+					log.Printf("[manager] instance %d watchdog restart failed: %v", id, err)
+					streamLogs(inst, strings.NewReader(fmt.Sprintf("[watchdog] automatic restart failed: %v\n", err)))
+				}
+			}()
+		}
+	}
+}
+
+// watchdogRestart restarts a peer-lost tunnel, but only if the tunnel is
+// still wanted. A manual Stop that lands between the watchdog firing and
+// this restart runs first under the same actionMu and clears wanted, so
+// the watchdog must not resurrect a tunnel the user just stopped. The
+// epoch bump (via newIntent, like RestartInstance) also keeps the
+// exiting process from scheduling a spurious crash recovery.
+func (m *Manager) watchdogRestart(id uint) error {
+	inst := m.getInstance(id)
+	inst.actionMu.Lock()
+	defer inst.actionMu.Unlock()
+	inst.mu.Lock()
+	wanted := inst.wanted
+	if wanted {
+		inst.newIntent(true)
+	}
+	inst.mu.Unlock()
+	if !wanted {
+		log.Printf("[manager] instance %d watchdog restart skipped: stopped by user", id)
+		return nil
+	}
+	if err := m.stopInstance(id); err != nil {
+		return err
+	}
+	if err := m.startInstance(id); err != nil {
+		return err
+	}
+	m.StartForwarders(id)
+	return nil
+}
 
 func recoveryBackoff(attempt int) time.Duration {
 	if attempt > 5 {
