@@ -30,11 +30,14 @@ jobs:
           cache: npm
           cache-dependency-path: panel/frontend/package-lock.json
       - run: go test -race ./internal/l3 ./internal/tester ./internal/benchmark
-      - run: go test -race ./cmd/panel ./internal/...
+      - run: go test -race ./internal/...
         working-directory: panel/backend
       - name: TLS installer CLI and recovery regressions
         run: sudo bash scripts/test_tls_install.sh
       - run: bash scripts/build.sh
+      - name: Panel CLI tests with the built embedded frontend
+        run: go test -race ./cmd/panel
+        working-directory: panel/backend
       - name: Real panel HTTPS readiness, certificate and URL regressions
         run: python3 scripts/integration_tls.py
       - run: npx playwright install --with-deps chromium
