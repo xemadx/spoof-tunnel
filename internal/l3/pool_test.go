@@ -11,6 +11,36 @@ import (
 func testPool() (*SourcePool, time.Time) {
 	return NewSourcePool([]net.IP{net.ParseIP("192.0.2.1")}, PoolPolicy{Mode: "adaptive"}), time.Unix(100000, 0)
 }
+func TestSeedVerifiedPreMarksProvenSource(t *testing.T) {
+	ips := []net.IP{net.ParseIP("192.0.2.1"), net.ParseIP("192.0.2.2")}
+	p := NewSourcePool(ips, PoolPolicy{Mode: "adaptive"})
+	if p.Ready() {
+		t.Fatal("pool ready before any verification")
+	}
+	if _, err := p.Select(false); err == nil {
+		t.Fatal("data selection allowed before verification")
+	}
+	if !p.SeedVerified(net.ParseIP("192.0.2.2"), 2*time.Minute) {
+		t.Fatal("seed rejected for a pool member")
+	}
+	if !p.Ready() {
+		t.Fatal("pool not ready after seed")
+	}
+	ip, err := p.Select(false)
+	if err != nil || ip.String() != "192.0.2.2" {
+		t.Fatalf("data selection did not pick the seeded source: %v %v", ip, err)
+	}
+	if p.SeedVerified(net.ParseIP("192.0.2.3"), time.Minute) {
+		t.Fatal("seed accepted for an address outside the pool")
+	}
+	// A quarantined source must not be seeded back to healthy.
+	p2 := NewSourcePool(ips, PoolPolicy{Mode: "adaptive"})
+	p2.Restore(map[string]int64{"192.0.2.1": time.Now().Add(time.Hour).Unix()}, time.Now())
+	if p2.SeedVerified(net.ParseIP("192.0.2.1"), time.Minute) {
+		t.Fatal("seed revived a quarantined source")
+	}
+}
+
 func TestPoolAuthenticatedAttributionAndQuarantine(t *testing.T) {
 	p, now := testPool()
 	token, ip := p.NextProbe(now)

@@ -49,6 +49,13 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 	if readJSON(filepath.Join(u.dir(), "job.json"), &job) != nil || job.ID != req.ID || job.Target != req.Target || job.Phase != "queued" {
 		return fmt.Errorf("invalid_update_job")
 	}
+	// A leftover intent means a previous worker died mid-update. The
+	// panel reconciles it on startup; if this worker still sees one, the
+	// panel has not restarted since, so refuse to stack another update
+	// on top of the interrupted one.
+	if u.hasPendingIntent() {
+		return fmt.Errorf("previous_update_incomplete")
+	}
 	phase := func(name string, progress int) error {
 		job.Phase = name
 		job.Progress = progress
@@ -56,10 +63,10 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 		return atomicJSON(filepath.Join(u.dir(), "job.json"), job)
 	}
 	stage := filepath.Join(u.dir(), req.ID)
-	stopped, installing := false, false
+	stopped, installing, backedUp := false, false, false
 	healthURL := ""
 	defer func() {
-		for _, name := range []string{"package.tar.gz", "spoof-panel", "spoof-l3", "package-checksums", "SHA256SUMS"} {
+		for _, name := range []string{"package.tar.gz", "spoof-panel", "spoof-l3", "package-checksums", "SHA256SUMS", "SHA256SUMS.sig"} {
 			_ = os.Remove(filepath.Join(stage, name))
 		}
 		if result == nil {
@@ -73,19 +80,15 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 			rollbackErr := error(nil)
 			if installing {
 				// Never restore a database while the new process could still write it.
+				// The service is already stopped here. Restore the database
+				// FIRST: a kill during rollback then leaves a consistent
+				// database with at most mixed binaries, which the boot-time
+				// reconcile can complete or roll back.
 				rollbackErr = u.command(rollbackCtx, "stop", "spoof-panel.service")
-				if rollbackErr == nil {
-					for _, pair := range [][2]string{{"previous-panel", u.panelPath}, {"previous-core", u.corePath}, {"panel-backup.db", filepath.Join(u.dataDir, "panel.db")}} {
-						mode := os.FileMode(0755)
-						if strings.HasSuffix(pair[0], ".db") {
-							mode = 0600
-						}
-						if e := replaceFile(filepath.Join(stage, pair[0]), pair[1], mode); e != nil {
-							rollbackErr = e
-							break
-						}
-					}
-					if rollbackErr == nil {
+				if rollbackErr == nil && backedUp {
+					if e := replaceFile(filepath.Join(stage, "panel-backup.db"), filepath.Join(u.dataDir, "panel.db"), 0600); e != nil {
+						rollbackErr = e
+					} else {
 						for _, suffix := range []string{"-wal", "-shm"} {
 							if e := os.Remove(filepath.Join(u.dataDir, "panel.db") + suffix); e != nil && !os.IsNotExist(e) {
 								rollbackErr = e
@@ -94,15 +97,30 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 						}
 					}
 				}
+				if rollbackErr == nil {
+					for _, pair := range [][2]string{{"previous-panel", u.panelPath}, {"previous-core", u.corePath}} {
+						if e := replaceFile(filepath.Join(stage, pair[0]), pair[1], 0755); e != nil {
+							rollbackErr = e
+							break
+						}
+					}
+				}
 			}
 			if rollbackErr == nil {
 				rollbackErr = u.command(rollbackCtx, "start", "spoof-panel.service")
 			}
-			if rollbackErr == nil && installing {
+			// Verify the restored panel answers, also when the failure
+			// happened after stop but before installing (for example the
+			// database backup failed): a running service is not proof
+			// that it serves the previous version.
+			if rollbackErr == nil && healthURL != "" {
 				rollbackErr = u.health(rollbackCtx, healthURL, job.From)
 			}
 			if rollbackErr == nil {
 				job.Phase = "rolled_back"
+				// The update is over; a leftover intent would only make
+				// the next boot re-check an already restored pair.
+				_ = os.Remove(filepath.Join(stage, "intent.json"))
 			} else {
 				job.Phase = "failed"
 				job.Error += "; rollback_failed: " + rollbackErr.Error()
@@ -126,7 +144,7 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 	if release.Tag != req.Target || !newer(req.Target, u.current) {
 		return fmt.Errorf("release_changed_or_not_newer")
 	}
-	archive, sums, err := u.assets(release)
+	archive, sums, sig, err := u.assets(release)
 	if err != nil {
 		return err
 	}
@@ -136,6 +154,27 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 	sumsPath := filepath.Join(stage, "SHA256SUMS")
 	if err = u.download(ctx, sums.URL, sumsPath, 16384); err != nil {
 		return err
+	}
+	// The signature is checked before the archive checksum: a bad signature
+	// means the checksums themselves cannot be trusted.
+	if sig.URL != "" {
+		sigPath := filepath.Join(stage, "SHA256SUMS.sig")
+		if err = u.download(ctx, sig.URL, sigPath, 512); err != nil {
+			return err
+		}
+		sumsBytes, err := os.ReadFile(sumsPath)
+		if err != nil {
+			return err
+		}
+		sigBytes, err := os.ReadFile(sigPath)
+		if err != nil {
+			return err
+		}
+		if err = verifyReleaseSignature(sumsBytes, sigBytes); err != nil {
+			return err
+		}
+	} else if requiresSignature(req.Target) {
+		return fmt.Errorf("missing_release_signature")
 	}
 	archivePath := filepath.Join(stage, "package.tar.gz")
 	lastProgress := time.Time{}
@@ -207,6 +246,11 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 		}
 	}
 	// Downloads, archive checks and executable checks finish before stopping anything.
+	// Resolve the health endpoint from the live database now: the rollback
+	// path needs it even when the database backup below fails.
+	if url, err := u.panelHealthURL(); err == nil {
+		healthURL = url
+	}
 	if err = phase("backing_up", 60); err != nil {
 		return err
 	}
@@ -223,14 +267,21 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
-	healthURL, err = backupDatabase(filepath.Join(u.dataDir, "panel.db"), filepath.Join(stage, "panel-backup.db"))
-	if err != nil {
+	if backupURL, err := backupDatabase(filepath.Join(u.dataDir, "panel.db"), filepath.Join(stage, "panel-backup.db")); err != nil {
 		return err
+	} else if healthURL == "" {
+		healthURL = backupURL
 	}
+	backedUp = true
 	if err = phase("installing", 75); err != nil {
 		return err
 	}
 	installing = true
+	// Marker for the boot-time reconcile: written before any live binary
+	// is replaced and removed once the new pair answers its health check.
+	if err = atomicJSON(filepath.Join(stage, "intent.json"), updateIntent{ID: req.ID, From: job.From, Target: req.Target}); err != nil {
+		return err
+	}
 	if err = replaceFile(filepath.Join(stage, "spoof-l3"), u.corePath, 0755); err != nil {
 		return err
 	}
@@ -250,9 +301,40 @@ func (u *Updater) Apply(ctx context.Context) (result error) {
 		return err
 	}
 	// Keep the previous binaries and consistent DB snapshot for manual recovery.
+	_ = os.Remove(filepath.Join(stage, "intent.json"))
 	_ = os.Remove(filepath.Join(stage, "package.tar.gz"))
 	_ = os.Remove(filepath.Join(u.dir(), "request.json"))
 	return nil
+}
+
+// panelHealthURL reads the panel endpoint from the live database without
+// modifying it, so the rollback path can verify the restored panel even
+// when the database backup itself failed.
+func (u *Updater) panelHealthURL() (string, error) {
+	for _, dsn := range []string{
+		"file:" + filepath.Join(u.dataDir, "panel.db") + "?mode=ro",
+		filepath.Join(u.dataDir, "panel.db"),
+	} {
+		database, err := sql.Open("sqlite", dsn)
+		if err != nil {
+			continue
+		}
+		database.SetMaxOpenConns(1)
+		var port, prefix string
+		if err = database.QueryRow("SELECT value FROM settings WHERE key = 'panel_port'").Scan(&port); err == nil {
+			err = database.QueryRow("SELECT value FROM settings WHERE key = 'web_path'").Scan(&prefix)
+		}
+		database.Close()
+		if err != nil {
+			continue
+		}
+		n, e := strconv.Atoi(port)
+		if e != nil || n < 1 || n > 65535 || prefix == "" || strings.ContainsAny(prefix, "/?#\\\r\n") {
+			return "", fmt.Errorf("invalid_panel_endpoint")
+		}
+		return "http://127.0.0.1:" + strconv.Itoa(n) + "/" + prefix + "/api/health", nil
+	}
+	return "", fmt.Errorf("invalid_panel_endpoint")
 }
 
 func (u *Updater) download(ctx context.Context, url, dest string, limit int64, progress ...func(int64) error) error {

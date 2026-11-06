@@ -34,11 +34,11 @@ func TestVersionAndReleaseValidation(t *testing.T) {
 	}
 	u := New("v0.4.1", t.TempDir())
 	r := fixtureRelease()
-	if _, _, err := u.assets(&r); err != nil {
+	if _, _, _, err := u.assets(&r); err != nil {
 		t.Fatal(err)
 	}
 	r.Assets[0].URL = "https://evil.example/package"
-	if _, _, err := u.assets(&r); err == nil {
+	if _, _, _, err := u.assets(&r); err == nil {
 		t.Fatal("accepted external asset")
 	}
 	for _, raw := range []string{"http://github.com/x", "https://github.com.evil/x", "https://user:pass@github.com/x", "https://github.com:8443/x"} {

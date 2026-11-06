@@ -50,15 +50,33 @@ type Invitation struct {
 	Target  uint   `json:"target"`
 }
 type Options struct {
-	RateMbps int `json:"rate_mbps"`
-	Seconds  int `json:"seconds"`
+	RateMbps    int  `json:"rate_mbps"`
+	Seconds     int  `json:"seconds"`
+	MaxRateMbps int  `json:"max_rate_mbps,omitempty"`
+	Escalate    bool `json:"escalate,omitempty"`
 }
 
 func (o Options) Validate() error {
-	if o.RateMbps < 1 || o.RateMbps > 60 || o.Seconds < 2 || o.Seconds > 8 {
-		return errors.New("benchmark rate must be 1–60 Mbps and duration 2–8 seconds per direction")
+	// RateMbps is the measurement ceiling, not only the base rate: the
+	// escalation round re-measures a capped cell at up to 500 Mbps using
+	// the same Options, so the ceiling must admit it. The base rate is
+	// bounded to 1–60 Mbps at the API entry point (handleBenchmarkStart).
+	if o.RateMbps < 1 || o.RateMbps > 500 || o.Seconds < 2 || o.Seconds > 8 {
+		return errors.New("benchmark rate must be 1–500 Mbps and duration 2–8 seconds per direction")
+	}
+	if o.MaxRateMbps != 0 && (o.MaxRateMbps < o.RateMbps || o.MaxRateMbps > 500) {
+		return errors.New("benchmark maximum rate must be 0 or between the base rate and 500 Mbps")
 	}
 	return nil
+}
+
+// maxRate is the ceiling for the escalation round: the configured
+// maximum, or 200 Mbps when escalation is on and no maximum was given.
+func (o Options) maxRate() int {
+	if o.MaxRateMbps != 0 {
+		return o.MaxRateMbps
+	}
+	return 200
 }
 func (o Options) count() int { return o.RateMbps * 1000000 * o.Seconds / (8 * payloadBytes) }
 
@@ -84,6 +102,11 @@ type Result struct {
 	Upload      Direction `json:"upload"`
 	Download    Direction `json:"download"`
 	Score       float64   `json:"score"`
+	// RateMbps is the rate of the round that produced this result; when
+	// Escalated is set, the base rate was capped and this result comes
+	// from the re-measurement at the ceiling.
+	RateMbps  int  `json:"rate_mbps,omitempty"`
+	Escalated bool `json:"escalated,omitempty"`
 }
 type Snapshot struct {
 	Endpoints   Endpoints `json:"endpoints"`
@@ -499,7 +522,11 @@ func (s *Session) handle(m message, carrier string) (any, error) {
 		if s.current != nil && m.Trial < s.current.index {
 			return nil, errors.New("old trial")
 		}
-		if s.current == nil || m.Trial != s.current.index {
+		// A re-prepare for the same cell with different options (the
+		// escalation round) must rebuild the trial, or the receiver
+		// would keep emitting at the old rate while the controller
+		// measures at the new one.
+		if s.current == nil || m.Trial != s.current.index || s.current.options.RateMbps != o.RateMbps || s.current.options.Seconds != o.Seconds {
 			s.current = newTrial(m.Trial, o, carrier, m.Return)
 		}
 		s.view.Options = o
@@ -655,119 +682,22 @@ func (s *Session) run(o Options) {
 	lastResponsive := -1
 	for index := 0; index < 25 && s.ctx.Err() == nil; index++ {
 		a, b := Carriers[index/5], Carriers[index%5]
-		r := Result{Index: index, Send: a, Receive: b, Status: "failed"}
-		s.mu.Lock()
-		s.view.Current = index
-		s.view.Phase = "handshake"
-		s.current = newTrial(index, o, a, b)
-		t := s.current
-		s.mu.Unlock()
-		if _, e := s.rpc(s.ctx, a, b, "prepare", index, o, 4); e != nil {
-			r.Error = e.Error()
-			s.record(r)
-			continue
+		r, responsive := s.measureCell(index, o)
+		if responsive {
+			lastResponsive = index
 		}
-		lastResponsive = index
-		s.mu.Lock()
-		s.view.Phase = "latency"
-		s.mu.Unlock()
-		samples := []float64{}
-		for n := 0; n < 12 && s.ctx.Err() == nil; n++ {
-			r.PingSent++
-			start := time.Now()
-			if _, e := s.rpc(s.ctx, a, b, "ping", index, nil, 1); e == nil {
-				samples = append(samples, float64(time.Since(start).Microseconds())/1000)
-				r.PingReplies++
+		// A cell that hits the configured rate in either direction has
+		// not measured capacity, only the ceiling. Re-measure once at
+		// the maximum rate: if the link is slower than the ceiling, the
+		// second round reports the true maximum; if it is still capped,
+		// the reported rate is a lower bound, not the capacity.
+		if r.Status == "passed" && o.Escalate && (r.Upload.Capped || r.Download.Capped) && o.maxRate() > o.RateMbps {
+			ceiling := o
+			ceiling.RateMbps = o.maxRate()
+			if r2, _ := s.measureCell(index, ceiling); r2.Status == "passed" {
+				r2.Escalated = true
+				r = r2
 			}
-			select {
-			case <-time.After(40 * time.Millisecond):
-			case <-s.ctx.Done():
-			}
-		}
-		if len(samples) < 8 {
-			r.Error = "fewer than 8 of 12 authenticated RTT samples"
-			s.record(r)
-			continue
-		}
-		sort.Float64s(samples)
-		r.RTTMs = samples[len(samples)/2]
-		if len(samples)%2 == 0 {
-			r.RTTMs = (samples[len(samples)/2-1] + r.RTTMs) / 2
-		}
-		r.P95Ms = samples[int(math.Ceil(.95*float64(len(samples))))-1]
-		s.mu.Lock()
-		s.view.Phase = "upload"
-		s.mu.Unlock()
-		r.Upload = s.emit(t, 0, a)
-		grace := time.Duration(math.Max(200, math.Min(2000, 2*r.P95Ms))) * time.Millisecond
-		select {
-		case <-time.After(grace):
-		case <-s.ctx.Done():
-			return
-		}
-		body, e := s.rpc(s.ctx, a, b, "upload_report", index, nil, 4)
-		var n int
-		if e != nil || json.Unmarshal(body, &n) != nil || n < 0 || n > r.Upload.Sent {
-			r.Error = "upload receipt report missing or invalid"
-			s.record(r)
-			continue
-		}
-		r.Upload = measure(r.Upload, n, o.RateMbps)
-		s.mu.Lock()
-		s.view.Phase = "download"
-		s.mu.Unlock()
-		if _, e = s.rpc(s.ctx, a, b, "download", index, nil, 4); e != nil {
-			r.Error = e.Error()
-			s.record(r)
-			continue
-		}
-		deadline := time.Now().Add(time.Duration(o.Seconds)*time.Second + 15*time.Second)
-		done := false
-		for !done && time.Now().Before(deadline) && s.ctx.Err() == nil {
-			select {
-			case <-time.After(250 * time.Millisecond):
-			case <-s.ctx.Done():
-				return
-			}
-			body, e = s.rpc(s.ctx, a, b, "download_report", index, nil, 2)
-			if e != nil {
-				continue
-			}
-			var report struct {
-				Done      bool      `json:"done"`
-				Direction Direction `json:"direction"`
-			}
-			if json.Unmarshal(body, &report) == nil && report.Done {
-				r.Download = report.Direction
-				done = true
-			}
-		}
-		if !done {
-			r.Error = "download report timed out"
-			s.record(r)
-			continue
-		}
-		select {
-		case <-time.After(grace):
-		case <-s.ctx.Done():
-			return
-		}
-		s.mu.Lock()
-		n = t.down.count
-		s.mu.Unlock()
-		if n > r.Download.Sent {
-			r.Error = "invalid download receipt count"
-			s.record(r)
-			continue
-		}
-		r.Download = measure(r.Download, n, o.RateMbps)
-		if r.Upload.Received == 0 || r.Download.Received == 0 {
-			r.Error = "no delivered payload in one or both directions"
-		} else {
-			r.Status = "passed"
-			loss := math.Max(r.Upload.LossPct, r.Download.LossPct)
-			pingLoss := 100 * float64(r.PingSent-r.PingReplies) / float64(r.PingSent)
-			r.Score = math.Min(r.Upload.Mbps, r.Download.Mbps) * math.Pow(1-math.Max(loss, pingLoss)/100, 2) / (1 + r.P95Ms/200)
 		}
 		s.record(r)
 		_, _ = s.rpc(s.ctx, a, b, "record", index, r, 3)
@@ -805,6 +735,122 @@ func (s *Session) run(o Options) {
 	s.mu.Unlock()
 
 }
+
+// measureCell runs one carrier pair at one rate. The second return value
+// reports whether the peer answered the prepare step at all (used to pick
+// a fallback route when nothing passed).
+func (s *Session) measureCell(index int, o Options) (Result, bool) {
+	a, b := Carriers[index/5], Carriers[index%5]
+	r := Result{Index: index, Send: a, Receive: b, Status: "failed", RateMbps: o.RateMbps}
+	s.mu.Lock()
+	s.view.Current = index
+	s.view.Phase = "handshake"
+	s.current = newTrial(index, o, a, b)
+	t := s.current
+	s.mu.Unlock()
+	if _, e := s.rpc(s.ctx, a, b, "prepare", index, o, 4); e != nil {
+		r.Error = e.Error()
+		return r, false
+	}
+	s.mu.Lock()
+	s.view.Phase = "latency"
+	s.mu.Unlock()
+	samples := []float64{}
+	for n := 0; n < 12 && s.ctx.Err() == nil; n++ {
+		r.PingSent++
+		start := time.Now()
+		if _, e := s.rpc(s.ctx, a, b, "ping", index, nil, 1); e == nil {
+			samples = append(samples, float64(time.Since(start).Microseconds())/1000)
+			r.PingReplies++
+		}
+		select {
+		case <-time.After(40 * time.Millisecond):
+		case <-s.ctx.Done():
+		}
+	}
+	if len(samples) < 8 {
+		r.Error = "fewer than 8 of 12 authenticated RTT samples"
+		return r, true
+	}
+	sort.Float64s(samples)
+	r.RTTMs = samples[len(samples)/2]
+	if len(samples)%2 == 0 {
+		r.RTTMs = (samples[len(samples)/2-1] + r.RTTMs) / 2
+	}
+	r.P95Ms = samples[int(math.Ceil(.95*float64(len(samples))))-1]
+	s.mu.Lock()
+	s.view.Phase = "upload"
+	s.mu.Unlock()
+	r.Upload = s.emit(t, 0, a)
+	grace := time.Duration(math.Max(200, math.Min(2000, 2*r.P95Ms))) * time.Millisecond
+	select {
+	case <-time.After(grace):
+	case <-s.ctx.Done():
+		return r, true
+	}
+	body, e := s.rpc(s.ctx, a, b, "upload_report", index, nil, 4)
+	var n int
+	if e != nil || json.Unmarshal(body, &n) != nil || n < 0 || n > r.Upload.Sent {
+		r.Error = "upload receipt report missing or invalid"
+		return r, true
+	}
+	r.Upload = measure(r.Upload, n, o.RateMbps)
+	s.mu.Lock()
+	s.view.Phase = "download"
+	s.mu.Unlock()
+	if _, e = s.rpc(s.ctx, a, b, "download", index, nil, 4); e != nil {
+		r.Error = e.Error()
+		return r, true
+	}
+	deadline := time.Now().Add(time.Duration(o.Seconds)*time.Second + 15*time.Second)
+	done := false
+	for !done && time.Now().Before(deadline) && s.ctx.Err() == nil {
+		select {
+		case <-time.After(250 * time.Millisecond):
+		case <-s.ctx.Done():
+			return r, true
+		}
+		body, e = s.rpc(s.ctx, a, b, "download_report", index, nil, 2)
+		if e != nil {
+			continue
+		}
+		var report struct {
+			Done      bool      `json:"done"`
+			Direction Direction `json:"direction"`
+		}
+		if json.Unmarshal(body, &report) == nil && report.Done {
+			r.Download = report.Direction
+			done = true
+		}
+	}
+	if !done {
+		r.Error = "download report timed out"
+		return r, true
+	}
+	select {
+	case <-time.After(grace):
+	case <-s.ctx.Done():
+		return r, true
+	}
+	s.mu.Lock()
+	n = t.down.count
+	s.mu.Unlock()
+	if n > r.Download.Sent {
+		r.Error = "invalid download receipt count"
+		return r, true
+	}
+	r.Download = measure(r.Download, n, o.RateMbps)
+	if r.Upload.Received == 0 || r.Download.Received == 0 {
+		r.Error = "no delivered payload in one or both directions"
+	} else {
+		r.Status = "passed"
+		loss := math.Max(r.Upload.LossPct, r.Download.LossPct)
+		pingLoss := 100 * float64(r.PingSent-r.PingReplies) / float64(r.PingSent)
+		r.Score = math.Min(r.Upload.Mbps, r.Download.Mbps) * math.Pow(1-math.Max(loss, pingLoss)/100, 2) / (1 + r.P95Ms/200)
+	}
+	return r, true
+}
+
 func (s *Session) record(r Result) {
 	s.mu.Lock()
 	s.view.Results = append(s.view.Results, r)

@@ -24,6 +24,23 @@ type poolDisk struct {
 	Quarantine             map[string]int64 `json:"quarantine"`
 	Peer                   []string         `json:"peer,omitempty"`
 	Revision               string           `json:"revision,omitempty"`
+	Bootstrap              *PoolBootstrap   `json:"bootstrap,omitempty"`
+}
+
+// PoolBootstrap is a one-shot seed written by the panel when a benchmark
+// has just proven one source pair with the carriers being applied. The
+// engine consumes it once at startup and never writes it back, so a
+// later restart re-verifies from scratch. Trust comes from the file
+// itself: it lives in the instance's private config directory next to
+// the PSK-bearing config, and it is only honored when the source and
+// peer source are members of the current configuration and the carriers
+// match.
+type PoolBootstrap struct {
+	Source     string `json:"source"`
+	PeerSource string `json:"peer_source"`
+	Send       string `json:"send"`
+	Receive    string `json:"receive"`
+	Expires    int64  `json:"expires"`
 }
 type poolTransfer struct {
 	done          bool
@@ -96,11 +113,14 @@ func (r *poolRuntime) start(parent context.Context) error {
 				log.Print("pool checkpoint unreadable; sources require fresh verification")
 			}
 			var d poolDisk
-			if json.Unmarshal(data, &d) == nil && d.Identity == r.identity {
-				r.conn.pool.Restore(d.Quarantine, time.Now())
-				if (r.configuredPeerRevision == d.ConfiguredPeerRevision || r.configuredPeerRevision == d.Revision) && r.validatePeer(d.Peer) == nil && len(d.Peer) > 0 {
-					r.admitPeer(d.Peer, d.Revision)
+			if json.Unmarshal(data, &d) == nil {
+				if d.Identity == r.identity {
+					r.conn.pool.Restore(d.Quarantine, time.Now())
+					if (r.configuredPeerRevision == d.ConfiguredPeerRevision || r.configuredPeerRevision == d.Revision) && r.validatePeer(d.Peer) == nil && len(d.Peer) > 0 {
+						r.admitPeer(d.Peer, d.Revision)
+					}
 				}
+				r.consumeBootstrap(d.Bootstrap)
 			}
 		}
 	}
@@ -575,6 +595,38 @@ func (r *poolRuntime) persist() {
 		log.Printf("pool checkpoint: %v", err)
 	}
 }
+
+// consumeBootstrap applies a benchmark seed written by the panel at
+// apply time. It is only honored while fresh, with matching carriers,
+// and when both addresses are members of the current configuration.
+func (r *poolRuntime) consumeBootstrap(b *PoolBootstrap) {
+	if b == nil || time.Now().Unix() >= b.Expires || b.Send != r.cfg.Send || b.Receive != r.cfg.Receive {
+		return
+	}
+	sources, err1 := r.cfg.Sources()
+	peers, err2 := r.cfg.PeerSources()
+	if err1 != nil || err2 != nil {
+		return
+	}
+	own, peer := false, false
+	for _, ip := range sources {
+		if ip.String() == b.Source {
+			own = true
+		}
+	}
+	for _, ip := range peers {
+		if ip.String() == b.PeerSource {
+			peer = true
+		}
+	}
+	if !own || !peer {
+		return
+	}
+	if r.conn.pool.SeedVerified(net.ParseIP(b.Source), 2*time.Minute) {
+		log.Printf("pool bootstrap: benchmark-proven source %s pre-verified", b.Source)
+	}
+}
+
 func writePoolCheckpoint(path string, value poolDisk) error {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -600,6 +652,19 @@ func writePoolCheckpoint(path string, value poolDisk) error {
 		return err
 	}
 	return os.Rename(name, path)
+}
+
+// SeedPoolBootstrap writes a one-shot bootstrap into the pool checkpoint
+// file, preserving any existing checkpoint content (quarantine deadlines
+// and the learned peer manifest). The engine consumes it once at startup
+// and never writes it back.
+func SeedPoolBootstrap(file, source, peerSource, send, receive string, ttl time.Duration) error {
+	var d poolDisk
+	if raw, err := os.ReadFile(file); err == nil {
+		_ = json.Unmarshal(raw, &d)
+	}
+	d.Bootstrap = &PoolBootstrap{Source: source, PeerSource: peerSource, Send: send, Receive: receive, Expires: time.Now().Add(ttl).Unix()}
+	return writePoolCheckpoint(file, d)
 }
 
 func (r *poolRuntime) serve(ctx context.Context) {

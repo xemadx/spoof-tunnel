@@ -610,6 +610,52 @@ func (p *SourcePool) Restore(deadlines map[string]int64, now time.Time) {
 	}
 }
 
+// SeedVerified pre-marks one source as verified, as if it had just
+// passed admission (two consecutive probe acks). It is used exactly once
+// at startup for a source a benchmark has already proven with the same
+// carriers: the tunnel then does not have to rediscover from scratch
+// before its first authenticated heartbeat can count toward readiness.
+// The seed is self-correcting — the normal quality probe is scheduled
+// immediately and Expire drops the source again if it stops answering —
+// and it never overrides a quarantine. Returns false when the IP is not
+// in the pool or is quarantined.
+func (p *SourcePool) SeedVerified(ip net.IP, validFor time.Duration) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	i, ok := p.positions[ip.String()]
+	if !ok {
+		return false
+	}
+	s := &p.states[i]
+	if s.State == "quarantined" {
+		return false
+	}
+	now := time.Now()
+	s.streak = 2
+	s.ready = true
+	s.State = "healthy"
+	s.Reason = "benchmark_seeded"
+	s.recent = 0
+	s.observations = 2
+	s.Failures = 0
+	s.RetryAt = 0
+	s.LastSuccess = now.Unix()
+	s.validUntil = now.Add(validFor)
+	if _, ok := p.verifiedPos[i]; !ok {
+		p.verifiedPos[i] = len(p.verified)
+		p.verified = append(p.verified, i)
+	}
+	if p.cohort == nil || len(p.good) < p.policy.ActiveSize {
+		p.addSelected(i)
+	}
+	if p.cohort != nil {
+		p.cohort.observe(p, i)
+	}
+	p.recomputeBest()
+	p.schedule(i, p.nextQualityProbe(i, now))
+	return true
+}
+
 // ProbeSize alternates small control-sized frames and full configured inner MTU.
 func (p *SourcePool) ProbeSize(token string, mtu int) int {
 	p.mu.Lock()

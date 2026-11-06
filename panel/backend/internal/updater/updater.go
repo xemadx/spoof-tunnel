@@ -55,6 +55,7 @@ type Status struct {
 	Latest     string    `json:"latest,omitempty"`
 	ReleaseURL string    `json:"release_url,omitempty"`
 	Available  bool      `json:"available"`
+	Signed     bool      `json:"signed"`
 	Supported  bool      `json:"supported"`
 	Reason     string    `json:"reason,omitempty"`
 	CheckedAt  time.Time `json:"checked_at"`
@@ -166,6 +167,7 @@ func (u *Updater) status() Status {
 		s.Latest = u.latest.Tag
 		s.ReleaseURL = u.latest.URL
 		s.Available = newer(s.Latest, s.Current)
+		s.Signed = hasSignatureAsset(u.latest)
 	}
 	var job Job
 	if readJSON(filepath.Join(u.dir(), "job.json"), &job) == nil {
@@ -244,8 +246,10 @@ func (u *Updater) Start(ctx context.Context, version string) (Status, error) {
 	if release.Tag != version || !newer(version, u.current) {
 		return u.status(), fmt.Errorf("release_changed_or_not_newer")
 	}
-	if _, _, err = u.assets(release); err != nil {
+	if _, _, sig, err := u.assets(release); err != nil {
 		return u.status(), err
+	} else if requiresSignature(version) && sig.URL == "" {
+		return u.status(), fmt.Errorf("missing_release_signature")
 	}
 	u.latest = release
 	u.checked = time.Now()
@@ -275,33 +279,54 @@ func (u *Updater) Start(ctx context.Context, version string) (Status, error) {
 	}
 	return u.status(), nil
 }
-func (u *Updater) assets(r *Release) (Asset, Asset, error) {
-	name := "spoof-tunnel-linux-" + runtime.GOARCH + ".tar.gz"
-	var archive, sums Asset
+func hasSignatureAsset(r *Release) bool {
 	for _, a := range r.Assets {
-		if a.Name != name && a.Name != "SHA256SUMS" {
+		if a.Name == "SHA256SUMS.sig" {
+			return true
+		}
+	}
+	return false
+}
+
+func (u *Updater) assets(r *Release) (Asset, Asset, Asset, error) {
+	name := "spoof-tunnel-linux-" + runtime.GOARCH + ".tar.gz"
+	var archive, sums, sig Asset
+	for _, a := range r.Assets {
+		if a.Name != name && a.Name != "SHA256SUMS" && a.Name != "SHA256SUMS.sig" {
 			continue
 		}
 		expected := "https://github.com/xemadx/spoof-tunnel/releases/download/" + r.Tag + "/" + a.Name
-		if a.URL != expected || a.Size <= 0 || a.Size > 128<<20 {
-			return archive, sums, fmt.Errorf("invalid_release_asset")
+		limit := int64(128 << 20)
+		if a.Name == "SHA256SUMS.sig" {
+			limit = 512
+		} else if a.Name == "SHA256SUMS" {
+			limit = 16384
 		}
-		if a.Name == name {
+		if a.URL != expected || a.Size <= 0 || a.Size > limit {
+			return archive, sums, sig, fmt.Errorf("invalid_release_asset")
+		}
+		switch a.Name {
+		case name:
 			if archive.URL != "" {
-				return archive, sums, fmt.Errorf("duplicate_release_asset")
+				return archive, sums, sig, fmt.Errorf("duplicate_release_asset")
 			}
 			archive = a
-		} else {
+		case "SHA256SUMS":
 			if sums.URL != "" {
-				return archive, sums, fmt.Errorf("duplicate_release_asset")
+				return archive, sums, sig, fmt.Errorf("duplicate_release_asset")
 			}
 			sums = a
+		case "SHA256SUMS.sig":
+			if sig.URL != "" {
+				return archive, sums, sig, fmt.Errorf("duplicate_release_asset")
+			}
+			sig = a
 		}
 	}
 	if archive.URL == "" || sums.URL == "" {
-		return archive, sums, fmt.Errorf("missing_release_assets")
+		return archive, sums, sig, fmt.Errorf("missing_release_assets")
 	}
-	return archive, sums, nil
+	return archive, sums, sig, nil
 }
 func atomicJSON(path string, v any) error {
 	b, err := json.Marshal(v)

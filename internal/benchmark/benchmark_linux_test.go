@@ -118,6 +118,79 @@ func TestRawAll25CarrierPairs(t *testing.T) {
 		}
 	}
 }
+func TestBenchmarkEscalationMeasuresAboveBaseRate(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("raw-socket integration requires root")
+	}
+	a, b := NewRunner(RawFactory), NewRunner(RawFactory)
+	defer a.Stop()
+	defer b.Stop()
+	code, e := b.Receiver(Invitation{A: "127.0.0.83", B: "127.0.0.84", SourceA: "127.1.83.1", SourceB: "127.1.84.1", PortA: 39883, PortB: 39884}, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = a.Controller(code, Options{RateMbps: 1, Seconds: 2, Escalate: true, MaxRateMbps: 2}, nil); e != nil {
+		t.Fatal(e)
+	}
+	deadline := time.After(6 * time.Minute)
+	for {
+		select {
+		case <-deadline:
+			t.Fatalf("timeout: %+v", a.Status())
+		case <-time.After(250 * time.Millisecond):
+			v := a.Status()
+			if v.Status == "done" {
+				if len(v.Results) != 25 || v.Recommended < 0 {
+					t.Fatalf("incomplete benchmark: %+v", v)
+				}
+				for _, r := range v.Results {
+					if r.Status != "passed" {
+						t.Fatalf("cell %d did not pass: %+v", r.Index, r)
+					}
+					// Loopback is far faster than 1 Mbps, so every cell
+					// must have escalated to the 2 Mbps ceiling, and the
+					// reported goodput must come from that round.
+					if !r.Escalated || r.RateMbps != 2 {
+						t.Fatalf("cell %d was not re-measured at the ceiling: %+v", r.Index, r)
+					}
+					if r.Upload.Mbps <= 1 || r.Download.Mbps <= 1 {
+						t.Fatalf("cell %d reports base-rate goodput after escalation: %+v", r.Index, r)
+					}
+					if !r.Upload.Capped || !r.Download.Capped {
+						t.Fatalf("cell %d should still be capped at the 2 Mbps ceiling on loopback: %+v", r.Index, r)
+					}
+				}
+				return
+			}
+		}
+	}
+}
+func TestOptionsEscalationValidation(t *testing.T) {
+	if e := (Options{RateMbps: 20, Seconds: 3, Escalate: true, MaxRateMbps: 100}).Validate(); e != nil {
+		t.Fatal(e)
+	}
+	if e := (Options{RateMbps: 20, Seconds: 3, Escalate: true}).Validate(); e != nil {
+		t.Fatal(e)
+	}
+	if (Options{RateMbps: 20, Seconds: 3, Escalate: true}).maxRate() != 200 {
+		t.Fatal("default escalation ceiling is not 200 Mbps")
+	}
+	for _, bad := range []Options{
+		{RateMbps: 20, Seconds: 3, MaxRateMbps: 10},
+		{RateMbps: 20, Seconds: 3, MaxRateMbps: 501},
+		{RateMbps: 0, Seconds: 3},
+		{RateMbps: 501, Seconds: 3},
+		{RateMbps: 20, Seconds: 9},
+	} {
+		if bad.Validate() == nil {
+			t.Fatalf("invalid options accepted: %+v", bad)
+		}
+	}
+	// The escalation round itself measures at the ceiling rate.
+	if e := (Options{RateMbps: 100, Seconds: 3}).Validate(); e != nil {
+		t.Fatalf("escalation round options rejected: %v", e)
+	}
+}
 func TestCountersAndMeasuredRates(t *testing.T) {
 	c := counter{bits: make([]uint64, 2)}
 	for _, n := range []int{0, 0, 1, 63, 64, 64, 127, -1, 128} {

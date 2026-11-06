@@ -76,6 +76,18 @@ func main() {
 	}
 	_ = os.Chmod(dataDir, 0700)
 
+	// Recover an update interrupted by a kill or power loss: complete it
+	// from the staged binaries or restore the previous pair, before any
+	// tunnel starts with a mixed pair. Reconcile returns true when the
+	// on-disk binaries changed and the process must restart to load
+	// them; the panel unit restarts on failure, so exit non-zero.
+	if restart, err := updater.New(panelVersion, dataDir).Reconcile(); err != nil {
+		log.Printf("interrupted-update recovery: %v", err)
+	} else if restart {
+		log.Printf("interrupted-update recovery: binaries reconciled, exiting so the service restarts")
+		os.Exit(1)
+	}
+
 	dbPath := filepath.Join(dataDir, "panel.db")
 	isSetup := *setup || *setupUser != ""
 	if !isSetup {

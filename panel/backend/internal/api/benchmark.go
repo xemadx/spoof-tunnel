@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +88,40 @@ func containsSource(ips []net.IP, value string) bool {
 	}
 	return false
 }
+
+// prioritizeBenchmarkSources moves the benchmark-proven source pair to
+// the front of the compiled pool lists. A list that does not contain the
+// source is left alone (the single-field fallback still carries it), and
+// an empty list stays empty so the pool is never reduced to one source.
+func prioritizeBenchmarkSources(inst *db.TunnelInstance, source, peerSource string) {
+	inst.SpoofIPList = prioritizeSource(inst.SpoofIPList, source)
+	inst.PeerSpoofIPList = prioritizeSource(inst.PeerSpoofIPList, peerSource)
+	inst.SpoofIP = source
+	inst.PeerSpoofIP = peerSource
+}
+
+func prioritizeSource(list, first string) string {
+	if strings.TrimSpace(list) == "" || strings.TrimSpace(first) == "" {
+		return list
+	}
+	lines := strings.Split(list, "\n")
+	found := false
+	out := []string{first}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == first {
+			found = true
+			continue
+		}
+		if line != "" {
+			out = append(out, line)
+		}
+	}
+	if !found {
+		return list
+	}
+	return strings.Join(out, "\n")
+}
 func benchmarkEndpoint(c db.TunnelInstance, local, peer, source, peerSource string) error {
 	if c.Engine != "tun" {
 		return errors.New("connection testing requires the TUN engine")
@@ -155,7 +191,7 @@ func (b *benchChange) unchanged() error {
 	}
 	return nil
 }
-func (b *benchChange) commit() error {
+func (b *benchChange) commit(source, peerSource string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.committed {
@@ -200,11 +236,32 @@ func (b *benchChange) commit() error {
 	}
 	b.committed = true
 	b.expires = time.Now().Add(90 * time.Second)
+	// Seed the engine with the benchmark-proven source pair so the new
+	// tunnel does not have to rediscover from scratch: without the seed
+	// the pool must re-verify sources and re-sync the manifest inside
+	// the apply wait, which is what failed a proven pair. Best effort —
+	// a seed failure only falls back to normal probing.
+	if b.after.Engine == "tun" && source != "" && peerSource != "" {
+		if err := b.s.manager.SeedPoolBootstrap(b.after.ID, source, peerSource, b.after.SendTransport, b.after.RecvTransport, 5*time.Minute); err != nil {
+			log.Printf("benchmark seed failed for instance %d: %v", b.after.ID, err)
+		}
+	}
 	if e := b.s.manager.StartInstance(b.after.ID); e != nil {
 		restore := b.rollbackLocked()
 		return errors.Join(e, restore)
 	}
 	return nil
+}
+
+// renew extends the apply lease while the controller is still waiting
+// for the peer, so a slow-but-healthy convergence is not rolled back by
+// the watch goroutine at 90 seconds.
+func (b *benchChange) renew() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.committed && !b.finalized {
+		b.expires = time.Now().Add(90 * time.Second)
+	}
 }
 func (b *benchChange) rollbackLocked() error {
 	if !b.committed {
@@ -371,7 +428,7 @@ func (s *Server) receiverBenchmarkHook(ctx context.Context, target uint, version
 		}
 		switch op {
 		case "apply_commit":
-			e := change.commit()
+			e := change.commit(inv.SourceB, inv.SourceA)
 			if session := s.benchmark.Session(); session != nil {
 				session.SetRemoteApply(e == nil, false, e)
 			}
@@ -384,7 +441,8 @@ func (s *Server) receiverBenchmarkHook(ctx context.Context, target uint, version
 			if change.committed {
 				change.expires = time.Now().Add(90 * time.Second)
 			}
-			return gin.H{"peer": change.committed && s.manager.Telemetry(change.after.ID).Peer, "committed": change.committed, "finalized": change.finalized}, nil
+			t := s.manager.Telemetry(change.after.ID)
+			return gin.H{"peer": change.committed && t.Peer, "committed": change.committed, "finalized": change.finalized, "pool_ready": t.PoolReady, "last_rejected_source": t.LastRejectedSource}, nil
 		case "apply_finalize":
 			e := change.finalize()
 			if session := s.benchmark.Session(); session != nil {
@@ -458,6 +516,10 @@ func (s *Server) handleBenchmarkStart(c *gin.Context) {
 	i, e := benchmark.Decode(req.Code)
 	if e != nil {
 		c.JSON(400, gin.H{"error": e.Error()})
+		return
+	}
+	if req.Options.RateMbps < 1 || req.Options.RateMbps > 60 {
+		c.JSON(400, gin.H{"error": "benchmark base rate must be 1–60 Mbps"})
 		return
 	}
 	var version time.Time
@@ -565,6 +627,11 @@ func (s *Server) handleBenchmarkPreview(c *gin.Context) {
 		c.JSON(400, gin.H{"error": e.Error()})
 		return
 	}
+	// Put the benchmark-proven source pair first in the compiled pool
+	// lists, so failover ordering and the pool tab both show the tested
+	// source first. The single-field fallbacks are set to the same pair.
+	prioritizeBenchmarkSources(&local, i.SourceA, i.SourceB)
+	prioritizeBenchmarkSources(&remote, i.SourceB, i.SourceA)
 	var token [16]byte
 	if _, e = rand.Read(token[:]); e != nil {
 		c.JSON(500, gin.H{"error": e.Error()})
@@ -633,25 +700,41 @@ func (s *Server) applyBenchmark(session *benchmark.Session, r benchmark.Result, 
 	if _, failure = session.RemoteApply(ctx, r, "apply_commit", token); failure != nil {
 		return
 	}
-	if failure = local.commit(); failure != nil {
+	inv := session.Invitation()
+	if failure = local.commit(inv.SourceA, inv.SourceB); failure != nil {
 		return
 	}
-	deadline := time.Now().Add(35 * time.Second)
+	// The peer wait used to be a fixed 35 seconds, but a cold-started
+	// smart-pool tunnel must verify sources and sync its manifest on
+	// both sides first; 35 seconds was too short for a large pool and
+	// rolled back healthy tunnels. The wait is now 100 seconds (inside
+	// the 2-minute apply context) and the local lease is renewed on
+	// every poll so the watch goroutine cannot roll back mid-wait.
+	deadline := time.Now().Add(100 * time.Second)
+	remotePeer, remotePoolReady, remoteRejected := false, false, ""
 	for time.Now().Before(deadline) {
 		if session.Status().Status != "applying" {
 			failure = errors.New("apply canceled")
 			return
 		}
+		local.renew()
 		body, e := session.RemoteApply(ctx, r, "apply_status", token)
 		var status struct {
-			Peer bool `json:"peer"`
+			Peer         bool   `json:"peer"`
+			PoolReady    bool   `json:"pool_ready"`
+			LastRejected string `json:"last_rejected_source"`
 		}
-		if e == nil && json.Unmarshal(body, &status) == nil && status.Peer && s.manager.Telemetry(local.after.ID).Peer {
-			if _, failure = session.RemoteApply(ctx, r, "apply_finalize", token); failure != nil {
+		if e == nil && json.Unmarshal(body, &status) == nil {
+			remotePeer = status.Peer
+			remotePoolReady = status.PoolReady
+			remoteRejected = status.LastRejected
+			if status.Peer && s.manager.Telemetry(local.after.ID).Peer {
+				if _, failure = session.RemoteApply(ctx, r, "apply_finalize", token); failure != nil {
+					return
+				}
+				failure = local.finalize()
 				return
 			}
-			failure = local.finalize()
-			return
 		}
 		select {
 		case <-time.After(time.Second):
@@ -660,7 +743,15 @@ func (s *Server) applyBenchmark(session *benchmark.Session, r benchmark.Result, 
 			return
 		}
 	}
-	failure = errors.New("new connection did not establish an authenticated peer; restoring previous settings")
+	lt := s.manager.Telemetry(local.after.ID)
+	failure = fmt.Errorf("new connection did not establish an authenticated peer; restoring previous settings (local pool ready: %t, local last rejected source: %s; remote peer: %t, remote pool ready: %t, remote last rejected source: %s)", lt.PoolReady, orNone(lt.LastRejectedSource), remotePeer, remotePoolReady, orNone(remoteRejected))
+}
+
+func orNone(value string) string {
+	if value == "" {
+		return "none"
+	}
+	return value
 }
 
 func localIPFromCIDR(value string) string {

@@ -17,6 +17,10 @@
 
 وضعیت در `/etc/spoof-panel/updates/job.json`، و پشتیبان هر عملیات در `/etc/spoof-panel/updates/<ID>/` نگهداری می‌شود؛ پوشه خصوصی و پشتیبان دیتابیس با دسترسی 0600 است. پشتیبان‌های قبلی برای بازیابی دستی حفظ می‌شوند و تا حذف دستی فضا مصرف می‌کنند. قطع برق یا خرابی دیسک خارج از تضمین برگشت خودکار معمول است؛ برای بازیابی دستی، ابتدا وضعیت تکمیل پشتیبان و لاگ را بررسی کن.
 
+از نسخهٔ v0.4.4 به بعد، انتشار باید امضای Ed25519 فایل `SHA256SUMS` را هم داشته باشد (`SHA256SUMS.sig`)؛ بدون امضا یا با امضای نامعتبر، آپدیت رد می‌شود. کلید خصوصی آفلاین نگه داشته می‌شود و فقط در workflow انتشار با secret گیت‌هاب استفاده می‌شود؛ کلید عمومی داخل پنل است. انتشارهای قدیمی‌تر بدون امضا هم پذیرفته می‌شوند، ولی در تنظیمات «بدون امضا» نشان داده می‌شوند.
+
+اگر حین نصب برق برود یا ورکر kill شود، پنل در راه‌اندازی بعدی ناهماهنگی دو باینری را تشخیص می‌دهد: اگر هر دو جدید باشند آپدیت کامل شده؛ اگر هر دو قدیمی باشند هیچی عوض نشده؛ اگر فقط هسته جدید باشد، آپدیت از روی فایل‌های stage کامل و سرویس ری‌استارت می‌شود؛ در غیر این صورت باینری‌های قبلی بازیابی می‌شوند. اگر هیچ‌کدام ممکن نباشد، پنل خطا را لاگ می‌کند و بازیابی دستی لازم است.
+
 ```sh
 journalctl -u spoof-panel-update -n 80 --no-pager
 systemctl status spoof-panel-update
@@ -35,6 +39,10 @@ The browser reports byte-derived download progress and completed installation st
 The panel service retains its existing restricted filesystem. Only the fixed updater service is allowed to replace the standard binary pair. Custom/manual installs are reported as unsupported. Backups remain under the private updates directory until manually removed.
 
 SQLite's [VACUUM INTO documentation](https://www.sqlite.org/lang_vacuum.html) describes snapshot consistency and power-loss limits. The systemd configuration follows the [systemd execution sandbox](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+
+From v0.4.4, a release must also carry `SHA256SUMS.sig`, an Ed25519 signature of the exact `SHA256SUMS` bytes made with an offline key. The private seed lives only as the GitHub Actions secret `SPOOF_RELEASE_SIGNING_KEY`; the public key is embedded in the panel (see `cmd/sign-release`). A missing or invalid signature rejects the update. Older unsigned releases are still accepted and are shown as unsigned in Settings.
+
+If power fails or the worker is killed mid-install, the panel reconciles on its next start: both binaries new means the update completed; both old means nothing changed; a new core with an old panel is completed from the staged binaries and the service restarts; any other mix restores the previous binaries. If neither is possible the panel logs the failure and manual recovery from `updates/<id>/` is required.
 
 ## UI review
 

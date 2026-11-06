@@ -52,7 +52,7 @@ func TestBenchmarkPreviewAndFailedStartPreserveConfiguration(t *testing.T) {
 	if current.SendTransport != "icmp" {
 		t.Fatal("preview changed live config")
 	}
-	if e = change.commit(); e == nil {
+	if e = change.commit("127.1.91.1", "127.1.92.1"); e == nil {
 		t.Fatal("nonexistent core binary unexpectedly started")
 	}
 	s.db.First(&current, old.ID)
@@ -73,13 +73,35 @@ func TestBenchmarkPreviewAndFailedStartPreserveConfiguration(t *testing.T) {
 		t.Fatal(e)
 	}
 	next.token = "failed-new"
-	if next.commit() == nil {
+	if next.commit("127.1.91.1", "127.1.92.1") == nil {
 		t.Fatal("missing core accepted")
 	}
 	var count int64
 	s.db.Model(&db.TunnelInstance{}).Count(&count)
 	if count != 1 {
 		t.Fatal("failed create left an orphan connection")
+	}
+}
+func TestPrioritizeBenchmarkSources(t *testing.T) {
+	inst := db.TunnelInstance{SpoofIPList: "10.0.0.2\n10.0.0.1\n10.0.0.3", PeerSpoofIPList: "10.0.1.1", SpoofIP: "10.0.0.2", PeerSpoofIP: "10.0.1.1"}
+	prioritizeBenchmarkSources(&inst, "10.0.0.1", "10.0.1.1")
+	if inst.SpoofIPList != "10.0.0.1\n10.0.0.2\n10.0.0.3" {
+		t.Fatalf("proven source not moved first: %q", inst.SpoofIPList)
+	}
+	if inst.SpoofIP != "10.0.0.1" || inst.PeerSpoofIP != "10.0.1.1" {
+		t.Fatal("single-field fallbacks not set to the proven pair")
+	}
+	// A source that is not in the list leaves the list alone.
+	absent := db.TunnelInstance{SpoofIPList: "10.0.0.2\n10.0.0.3"}
+	prioritizeBenchmarkSources(&absent, "10.0.0.9", "10.0.1.9")
+	if absent.SpoofIPList != "10.0.0.2\n10.0.0.3" {
+		t.Fatal("absent source rewrote the list")
+	}
+	// An empty list stays empty so the pool is never reduced to one source.
+	empty := db.TunnelInstance{}
+	prioritizeBenchmarkSources(&empty, "10.0.0.1", "10.0.1.1")
+	if empty.SpoofIPList != "" {
+		t.Fatal("empty list gained entries")
 	}
 }
 func TestBenchmarkRecoveryAndNewerEditProtection(t *testing.T) {

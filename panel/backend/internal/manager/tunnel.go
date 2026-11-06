@@ -735,6 +735,18 @@ func (m *Manager) PoolSocket(id uint) string {
 	return filepath.Join(m.configDir, fmt.Sprintf("pool-control-%d.sock", id))
 }
 
+// SeedPoolBootstrap writes a one-shot benchmark bootstrap into the
+// instance's pool checkpoint so the engine starts with the
+// benchmark-proven source pre-verified instead of rediscovering from
+// scratch. Best effort: a failure here only means the tunnel converges
+// by normal probing.
+func (m *Manager) SeedPoolBootstrap(id uint, source, peerSource, send, receive string, ttl time.Duration) error {
+	if err := os.MkdirAll(m.configDir, 0700); err != nil {
+		return err
+	}
+	return l3.SeedPoolBootstrap(filepath.Join(m.configDir, fmt.Sprintf("pool-state-%d.json", id)), source, peerSource, send, receive, ttl)
+}
+
 // DataDir is the private installation/configuration directory.
 func (m *Manager) DataDir() string { return m.configDir }
 

@@ -257,6 +257,7 @@ export type UpdateStatus = {
   supported: boolean;
   reason?: string;
   available: boolean;
+  signed: boolean;
   checked_at?: string;
   job?: {
     id: string;
@@ -306,6 +307,8 @@ export type BenchResult = {
   upload: BenchDirection;
   download: BenchDirection;
   score: number;
+  rate_mbps?: number;
+  escalated?: boolean;
 };
 export type BenchState = {
   endpoints?: {
@@ -322,7 +325,12 @@ export type BenchState = {
   current: number;
   progress: number;
   expires: number;
-  options: { rate_mbps: number; seconds: number };
+  options: {
+    rate_mbps: number;
+    seconds: number;
+    max_rate_mbps?: number;
+    escalate?: boolean;
+  };
   results: BenchResult[];
   recommended: number;
   error?: string;

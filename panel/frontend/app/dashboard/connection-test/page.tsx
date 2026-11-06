@@ -56,10 +56,27 @@ function failure(s?: string) {
   if (s.includes("no authenticated response"))
     return "در این ترکیب، پاسخ احرازشدهٔ دوطرفه دریافت نشد.";
   if (s.includes("fewer than 8"))
-    return "پاسخ کافی برای اندازه‌گیری قابل اتکا دریافت نشد.";
+    return "پاسخ کافی برای اندازه‌گیری قابل اتکا دریافت نشد؛ اگر هیچ پاسخی نیامده، این حامل در این جهت توسط مسیر فیلتر می‌شود و خطای کد نیست.";
   if (s.includes("no delivered"))
     return "دادهٔ آزمون در یکی از جهت‌ها دریافت نشد.";
   return s;
+}
+function applyError(error: string) {
+  const marker = "new connection did not establish an authenticated peer";
+  if (!error.includes(marker)) return null;
+  const detail = error.includes("(") ? error.slice(error.indexOf("(")) : "";
+  return (
+    <>
+      اتصال جدید در زمان مقرر همتای احرازشده را پیدا نکرد و تنظیمات قبلی
+      بازیابی شد.
+      {detail && (
+        <>
+          <br />
+          <small dir="ltr">{detail}</small>
+        </>
+      )}
+    </>
+  );
 }
 function speed(r: BenchResult) {
   return Math.min(r.upload.mbps, r.download.mbps);
@@ -81,6 +98,8 @@ export default function ConnectionTestPage() {
   const [subnet, setSubnet] = useState("10.77.0.0/30");
   const [rate, setRate] = useState(20);
   const [seconds, setSeconds] = useState(3);
+  const [maxRate, setMaxRate] = useState(100);
+  const [escalate, setEscalate] = useState(true);
   const [allow, setAllow] = useState(false);
   const [form, setForm] = useState({
     local_ip: "",
@@ -232,7 +251,12 @@ export default function ConnectionTestPage() {
           target_id: target,
           name,
           subnet,
-          options: { rate_mbps: rate, seconds },
+          options: {
+            rate_mbps: rate,
+            seconds,
+            max_rate_mbps: maxRate,
+            escalate,
+          },
         }),
       );
     });
@@ -607,16 +631,51 @@ export default function ConnectionTestPage() {
                   </select>
                 </label>
               </div>
+              <div className="grid-2">
+                <label className="field">
+                  <span>سقف حداکثر برای سنجش دوباره</span>
+                  <select
+                    className="input"
+                    value={maxRate}
+                    disabled={!!locked || !!busy || !escalate}
+                    onChange={(e) => setMaxRate(Number(e.target.value))}
+                  >
+                    {[20, 40, 60, 100, 200, 500].map((n) => (
+                      <option key={n} value={n}>
+                        {number(n, 0)} Mbps
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="pool-check">
+                  <input
+                    type="checkbox"
+                    checked={escalate}
+                    disabled={!!locked || !!busy}
+                    onChange={(e) => setEscalate(e.target.checked)}
+                  />
+                  <span>
+                    اگر جهتی به سقف رسید، با سقف حداکثر دوباره بسنج تا ماکسیمم
+                    واقعی معلوم شود
+                  </span>
+                </label>
+              </div>
               <div className="ct-budget">
                 <strong>۲۵ ترکیب · دو جهت جداگانه</strong>
                 <span>
-                  تا حدود {number((rate * seconds * 25 * 2) / 8, 0)} MB دادهٔ
-                  آزمون، به‌علاوهٔ سربار شبکه
+                  تا حدود{" "}
+                  {number(
+                    ((rate + (escalate ? maxRate : 0)) * seconds * 25 * 2) /
+                      8,
+                    0,
+                  )}{" "}
+                  MB دادهٔ آزمون، به‌علاوهٔ سربار شبکه
                 </span>
                 <small>
-                  برای هر ترکیب ۱۲ نمونهٔ رفت‌وبرگشت ثبت می‌شود. این یک آزمون
-                  کوتاه با سقف مشخص است؛ رسیدن به سقف، ظرفیت نهایی مسیر را معلوم
-                  نمی‌کند.
+                  برای هر ترکیب ۱۲ نمونهٔ رفت‌وبرگشت ثبت می‌شود. اگر جهتی به
+                  سقف پایه برسد، همان ترکیب یک بار دیگر با سقف حداکثر سنجیده
+                  می‌شود تا ماکسیمم واقعی معلوم شود؛ فقط ترکیب‌های موفق دوباره
+                  سنجیده می‌شوند.
                 </small>
               </div>
               <div className="ct-actions">
@@ -683,6 +742,14 @@ export default function ConnectionTestPage() {
             value={state.progress}
             aria-label="پیشرفت آزمون اتصال"
           />
+          {state.status === "applying" && (
+            <p className="pool-note" role="status">
+              تونل جدید در دو سرور راه‌اندازی می‌شود و پاسخ احرازشده و تأیید
+              استخر مبدأها بررسی می‌شود؛ این مرحله تا حدود ۱۰۰ ثانیه طول
+              می‌کشد. اگر در این مدت همتا تأیید نشود، تنظیمات قبلی خودکار
+              بازیابی می‌شود.
+            </p>
+          )}
           {state.endpoints && (
             <details className="pool-advanced">
               <summary>مبدأها و پورت‌های ثابت این آزمون</summary>
@@ -718,7 +785,7 @@ export default function ConnectionTestPage() {
           )}
           {state.error && (
             <p className="alert alert-error" role="alert">
-              {state.error}
+              {applyError(state.error) ?? state.error}
             </p>
           )}
           {best && (
@@ -742,10 +809,23 @@ export default function ConnectionTestPage() {
                 </p>
                 {(best.upload.capped || best.download.capped) && (
                   <p className="ct-ceiling">
-                    حداقل یک جهت به سقف آزمون رسیده؛ برای مقایسهٔ ظرفیت بالاتر
-                    با سقف بیشتر دوباره بسنج.
+                    حداقل یک جهت هنوز به سقف حداکثر (
+                    {number(
+                      best.rate_mbps || state.options.max_rate_mbps || rate,
+                      0,
+                    )}{" "}
+                    Mbps) رسیده؛ ظرفیت واقعی بالاتر از این است — برای
+                    اندازه‌گیری بالاتر، سقف حداکثر را بیشتر کن.
                   </p>
                 )}
+                {best.escalated &&
+                  !best.upload.capped &&
+                  !best.download.capped && (
+                    <p className="hint">
+                      این ترکیب پس از رسیدن به سقف پایه، با سقف بالاتر دوباره
+                      سنجیده شد و سرعت واقعی آن معلوم است.
+                    </p>
+                  )}
               </div>
               {role === "local" &&
                 state.status === "done" &&
@@ -804,7 +884,12 @@ export default function ConnectionTestPage() {
                           >
                             {r?.status === "passed" ? (
                               <>
-                                <strong dir="ltr">{number(speed(r))}</strong>
+                                <strong dir="ltr">
+                                  {r.upload.capped || r.download.capped
+                                    ? "≥ "
+                                    : ""}
+                                  {number(speed(r))}
+                                </strong>
                                 <small>
                                   Mbps
                                   {index === state.recommended
@@ -836,6 +921,21 @@ export default function ConnectionTestPage() {
               ) : (
                 <>
                   <div className="ct-metrics">
+                    <div>
+                      <small>سقف سنجش نهایی</small>
+                      <strong dir="ltr">
+                        {number(
+                          detail.rate_mbps || state.options.rate_mbps,
+                          0,
+                        )}{" "}
+                        Mbps
+                      </strong>
+                      <small>
+                        {detail.escalated
+                          ? "پس از رسیدن به سقف پایه، با سقف بالاتر دوباره سنجیده شد"
+                          : "در سقف پایه سنجیده شد"}
+                      </small>
+                    </div>
                     <div>
                       <small>تأخیر میانه / صدک ۹۵</small>
                       <strong dir="ltr">

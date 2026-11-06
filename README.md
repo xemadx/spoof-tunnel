@@ -46,13 +46,13 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.4.1**:
+To explicitly install **v0.4.4**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.4.1/install.sh | SPOOF_RELEASE=v0.4.1 bash
+curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.4.4/install.sh | SPOOF_RELEASE=v0.4.4 bash
 ```
 
-Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS`. No Go, Node.js or Rust toolchain is needed on the VPS.
+Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS` and a signed `SHA256SUMS.sig`. No Go, Node.js or Rust toolchain is needed on the VPS.
 
 ## Connect two servers
 
@@ -137,7 +137,7 @@ Rotating local spoof sources require the **same selected set in the other end's 
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.4.1 bash scripts/build.sh
+SPOOF_VERSION=v0.4.4 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
@@ -168,7 +168,7 @@ The receiver acknowledges startup only after its raw socket is ready. ICMP retai
 
 Forwarders wait up to five seconds for their assigned TUN to be up, and Stop cancels that wait. There is still no fallback route. Running tunnel edits are rejected with HTTP 409; saving a stopped/error tunnel cancels queued recovery and requires explicit Start. A mismatched PSK/allowlist normally leaves a live core without a working peer; restarting cannot repair it.
 
-The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.4.1` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
+The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.4.4` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
 
 
 ### v0.3.10 connection labels
@@ -187,8 +187,12 @@ Clearing the manual default and selecting a TXT group now commit together, inclu
 
 Settings now checks GitHub Releases and installs a newer stable panel/core pair with progress, actual downloaded bytes, mandatory checksums, a consistent SQLite backup and rollback on startup failure. The page reloads once after the new version responds; the header reads the new running version. **Upgrade to v0.4.1 once with the installer to install the independent update service.** Future updates can then be started from Settings. [Update operation and limits](docs/UPDATING.md).
 
+### v0.4.4: signed releases, kill-proof updates, uncapped connection test
+
+From v0.4.4, `SHA256SUMS` is signed with an offline Ed25519 key; panels on v0.4.4+ refuse a signed-version release whose signature is missing or invalid, so a compromised release cannot pass on checksums alone. An update interrupted by a killed worker or power loss is now recovered at panel startup: a surviving intent marker reconciles the binary pair (completing the update when only the core was replaced, restoring the previous pair otherwise) instead of leaving a mixed installation. Connection test no longer stops at the base rate: a capped cell is re-measured once at a configurable maximum (default 100, up to 500 Mbps) and reports the true maximum, and applying a result seeds the benchmark-proven source into both engines so the new tunnel does not verify its pool from scratch, with a 100-second authenticated-peer wait and per-side pool diagnostics on failure. [Update operation and limits](docs/UPDATING.md) · [Connection test](docs/CONNECTION-TEST.md).
+
 ## Compare carriers before applying
 
-In **Connection test**, pair the two panels with a temporary code and compare all 25 ordered carrier combinations using fixed spoof sources, authenticated RTT and delivered upload/download goodput. A separate confirmation creates both complementary ends or safely replaces the selected existing pair, with validation and rollback. Tests have explicit rate/time limits and label ceiling-limited results. [How it works, setup and limits](docs/CONNECTION-TEST.md).
+In **Connection test**, pair the two panels with a temporary code and compare all 25 ordered carrier combinations using fixed spoof sources, authenticated RTT and delivered upload/download goodput. A separate confirmation creates both complementary ends or safely replaces the selected existing pair, with validation and rollback. Tests have explicit rate/time limits; a cell that reaches the base rate is re-measured once at a higher maximum so the reported speed is the real maximum, and results still capped at that maximum are lower bounds. [How it works, setup and limits](docs/CONNECTION-TEST.md).
 
 Source pools can now use a bounded set such as **100 verified sources refreshed every 30 minutes**; adaptive, round-robin and failover dispatch stay inside that set. [Source-pool details](docs/SMART-POOLS.md).

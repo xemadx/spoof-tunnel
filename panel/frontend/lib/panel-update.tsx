@@ -193,6 +193,12 @@ export function PanelUpdate({ onBusy }: { onBusy: (value: boolean) => void }) {
         <div>
           <span>آخرین نسخهٔ بررسی‌شده</span>
           <strong dir="ltr">{status?.latest || "هنوز بررسی نشده"}</strong>
+          {status?.latest &&
+            (status.signed ? (
+              <span className="pill success">امضاشده</span>
+            ) : (
+              <span className="pill muted">بدون امضا</span>
+            ))}
         </div>
       </div>
       {status && !status.supported && (
