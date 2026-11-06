@@ -98,3 +98,9 @@ points at this server. A broken TLS configuration never bricks the panel: if
 `tls.json` says enabled but the files cannot be read, the panel logs loudly
 and falls back to plain HTTP. `tls.json` lives in `/etc/spoof-panel` with
 mode 0600 and holds no private key — only the paths to certbot's files.
+
+## رفع خطای Certbot در v0.4.10 / Certbot argument fix
+
+در نسخه‌های v0.4.7 تا v0.4.9، تلاش برای صدور گواهی با خطای `unrecognized arguments: --register-unspecified` متوقف می‌شد. در v0.4.10 گزینهٔ معتبر `--register-unsafely-without-email` جایگزین شده است. برای تلاش دوباره، نصب‌کنندهٔ نسخهٔ اصلاح‌شده را اجرا کن، حفظ رمز فعلی را انتخاب و دامنه را دوباره وارد کن. خطای قبلی پیش از صدور گواهی رخ می‌داد؛ دریافت واقعی همچنان به DNS صحیح و دسترسی ورودی پورت ۸۰ نیاز دارد. دامنه، پورت و مسیر پنل برای هر سرور جدا باقی می‌مانند.
+
+v0.4.10 fixes an invalid Certbot account-registration option in the installer. The supported no-email option is `--register-unsafely-without-email`; the earlier `--register-unspecified` fails before certificate issuance. Rerun the updated installer, retain the existing password, and enter the domain again. Regression tests now reject unsupported CLI options and run in CI; the corrected argument vector was also parsed by real Ubuntu 22.04 Certbot 1.21.0 without contacting an ACME server. This validates CLI compatibility, not public DNS/HTTP-01 reachability for any particular domain.

@@ -230,7 +230,7 @@ spoof_maybe_tls() {
   echo "  Requesting a certificate for $domain (Let's Encrypt)…"
   local cert_log
   cert_log=$(mktemp)
-  if ! certbot certonly --standalone --non-interactive --agree-tos --register-unspecified --preferred-challenges http -d "$domain" >"$cert_log" 2>&1; then
+  if ! certbot certonly --standalone --non-interactive --agree-tos --register-unsafely-without-email --preferred-challenges http -d "$domain" >"$cert_log" 2>&1; then
     echo '  ! certbot could not issue a certificate:'
     tail -n 20 "$cert_log" | sed 's/^/    /'
     rm -f "$cert_log"

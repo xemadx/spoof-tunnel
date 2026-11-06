@@ -21,8 +21,8 @@ check() { # check <name> <condition...>
   local name="$1"; shift
   if "$@"; then pass "$name"; else fail "$name"; fi
 }
-contains() { grep -qF "$2" "$1"; }
-not_contains() { ! grep -qF "$2" "$1"; }
+contains() { grep -qF -- "$2" "$1"; }
+not_contains() { ! grep -qF -- "$2" "$1"; }
 
 # --- PATH shims -----------------------------------------------------------
 # Written once; behaviour is driven by env flags so each scenario can flip
@@ -40,13 +40,30 @@ SHIM
 #!/usr/bin/env bash
 echo "certbot $*" >> "$MOCK_LOG"
 if [[ "$1" == "certonly" ]]; then
+  # Match the supported CLI instead of silently accepting arbitrary options.
+  # The old permissive shim hid the invalid --register-unspecified option.
+  shift
+  d=""; challenge=""; standalone=0; noninteractive=0; tos=0; noemail=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --standalone) standalone=1; shift ;;
+      --non-interactive) noninteractive=1; shift ;;
+      --agree-tos) tos=1; shift ;;
+      --register-unsafely-without-email) noemail=1; shift ;;
+      --preferred-challenges) [[ $# -gt 1 ]] || exit 2; challenge="$2"; shift 2 ;;
+      -d) [[ $# -gt 1 ]] || exit 2; d="$2"; shift 2 ;;
+      *) echo "certbot: error: unrecognized arguments: $1" >&2; exit 2 ;;
+    esac
+  done
+  if [[ "$standalone$noninteractive$tos$noemail" != 1111 || "$challenge" != http || -z "$d" ]]; then
+    echo 'certbot: error: incomplete non-interactive HTTP-01 request' >&2
+    exit 2
+  fi
   if [[ "${MOCK_CERTBOT:-ok}" == fail ]]; then
     echo "An error occurred while issuing the certificate" >&2
     echo "Failed authorization procedure" >&2
     exit 1
   fi
-  local d="" prev=""
-  for a in "$@"; do [[ "$prev" == "-d" ]] && d="$a"; prev="$a"; done
   mkdir -p "/etc/letsencrypt/live/$d"
   printf 'fake fullchain for %s\n' "$d" > "/etc/letsencrypt/live/$d/fullchain.pem"
   printf 'fake privkey for %s\n' "$d" > "/etc/letsencrypt/live/$d/privkey.pem"
@@ -245,6 +262,8 @@ scenario_1_setup() { printf 'y\n%s\n' "$DOMAIN" > "$1/answers"; : > "$1/env"; }
 check_scenario_1() {
   local dir="$1" log="$2"
   check "scenario 1: certbot issued the certificate" contains "$log" "certbot certonly"
+  check "scenario 1: supported no-email registration option" contains "$log" "--register-unsafely-without-email"
+  check "scenario 1: invalid registration option absent" not_contains "$log" "--register-unspecified"
   check "scenario 1: panel configured with --set-tls" contains "$dir/out.txt" "TLS enabled for $DOMAIN"
   check "scenario 1: panel restarted" contains "$log" "systemctl restart spoof-panel.service"
   check "scenario 1: HTTPS enabled reported" contains "$dir/out.txt" "✓ HTTPS enabled"
