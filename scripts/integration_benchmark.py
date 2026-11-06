@@ -27,6 +27,16 @@ def main():
                 path, json.dumps(payload), timeout=45).stdout)
             assert result[0] == expected, (side, method, path, result)
             return result[1]
+        def set_default(side, ident, source):
+            metadata=api(side,'GET',f'/instances/{ident}/pools')
+            group=next(f for f in metadata['files'] if f['kind']=='default')
+            boundary='benchmark-pool-fixture'
+            fields={'updated_at':metadata['updated_at'],'settings':json.dumps(dict(ids=[group['id']],mode='adaptive',probe_pps=25,active_size=100,refresh_seconds=1800,auto_peer_sync=True))}
+            body=f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="default.txt"\r\nContent-Type: text/plain\r\n\r\n{source}\n\r\n'
+            for key,value in fields.items():body+=f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'
+            body+=f'--{boundary}--\r\n'
+            result=json.loads(run('ip','netns','exec',names[side],'python3','-c',API_CODE,bases[side],tokens[side],'POST',f'/instances/{ident}/pools/default',body,'multipart/form-data; boundary='+boundary,timeout=20).stdout)
+            assert result[0]==200,result
         def spawn(side, args, env=None):
             log = (directory/f'process-{len(processes)}.log').open('w+');logs.append(log)
             p = subprocess.Popen(['ip','netns','exec',names[side],*args], env=env, stdout=log, stderr=log)
@@ -57,11 +67,17 @@ def main():
                 tokens[i]=api(i,'POST','/auth/login',{'username':'benchmark','password':'isolated-benchmark-password'})['token']
             pair=api(0,'POST','/pairs',dict(engine='tun',name='approved-carrier-change',local_ip='192.0.2.1',remote_ip='192.0.2.2',local_spoof='198.51.100.10',remote_spoof='198.51.100.20',listen='127.0.0.1:5000',forward='127.0.0.1:51820',upload='icmp',download='icmp',local_port=5001,remote_port=8090,save_role='local',tun_subnet='10.88.0.0/30',auto_start=False))
             local=pair['saved'];remote=api(1,'POST','/instances',pair['remote'],201);ids=[local['id'],remote['id']]
+            for i in range(2):set_default(i,ids[i],['198.51.100.11','198.51.100.21'][i])
             for i in range(2):api(i,'POST',f'/instances/{ids[i]}/start',{})
             wait_peers(ids)
             api(0,'POST',f'/instances/{ids[0]}/forwards',dict(name='preserved-forward',protocol='tcp',listen_port=11001,target_port=19001,enabled=True),201)
             spawn(1,['python3','-c',SERVER_CODE,'FOREIGN:'])
-            setup=api(1,'POST','/connection-test/receiver',dict(local_ip='192.0.2.2',peer_ip='192.0.2.1',source='198.51.100.20',peer_source='198.51.100.10',port_a=5001,port_b=8090,target_id=ids[1],allow_apply=True),201)
+            presets=[api(i,'GET',f'/instances/{ids[i]}/benchmark-presets') for i in range(2)]
+            for i,preset in enumerate(presets):
+                assert preset['source']==['198.51.100.11','198.51.100.21'][i] and preset['peer_source']==['198.51.100.21','198.51.100.11'][i],preset
+                assert preset['peer_learned'] and preset['source_verified'],preset
+            p=presets[1]
+            setup=api(1,'POST','/connection-test/receiver',dict(local_ip=p['local_ip'],peer_ip=p['peer_ip'],source=p['source'],peer_source=p['peer_source'],port_a=p['send_port'],port_b=p['receive_port'],target_id=ids[1],allow_apply=True),201)
             api(0,'POST','/connection-test/start',dict(code=setup['code'],target_id=ids[0],options=dict(rate_mbps=1,seconds=2)),202)
             until=time.monotonic()+240
             while time.monotonic()<until:
@@ -95,7 +111,7 @@ def main():
             client=CLIENT_CODE.replace("'192.0.2.10'","'192.0.2.1'")
             run('ip','netns','exec',names[0],'python3','-c',client,'10.88.0.2','11001','FOREIGN:',timeout=20)
             run('ip','netns','exec',names[0],'ping','-c','3','-W','2','10.88.0.2',timeout=10)
-            print('PASS real panels: all 25 raw carrier tests alongside a live TUN; no pre-approval mutation; asymmetric replacement; same keys, IDs, TUNs and forward rules; synchronized UI; verified cohort; real TCP, UDP, ICMP and forwarding after apply',flush=True)
+            print('PASS real panels: effective active/learned pool presets after replacing original sources; all 25 raw carrier tests alongside a live TUN; no pre-approval mutation; asymmetric replacement; same keys, IDs, TUNs and forward rules; synchronized UI; verified cohort; real TCP, UDP, ICMP and forwarding after apply',flush=True)
         except Exception:
             for log in logs:log.flush();log.seek(0);print(log.read()[-6000:])
             for i in range(len(bases)):

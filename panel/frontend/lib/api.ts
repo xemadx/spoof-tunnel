@@ -269,6 +269,21 @@ export type UpdateStatus = {
     error?: string;
   };
 };
+export type BenchPreset = {
+  id: number;
+  name: string;
+  role: string;
+  local_ip: string;
+  peer_ip: string;
+  source: string;
+  peer_source: string;
+  source_verified: boolean;
+  peer_learned: boolean;
+  receive_port: number;
+  send_port: number;
+  subnet: string;
+  updated_at: string;
+};
 export type BenchDirection = {
   sent: number;
   received: number;
@@ -326,6 +341,8 @@ export type BenchPreview = {
   expires: number;
 };
 export const api = {
+  benchmarkPreset: (id: number, signal?: AbortSignal) =>
+    request<BenchPreset>(`/instances/${id}/benchmark-presets`, { signal }),
   benchmarkStatus: (signal?: AbortSignal) =>
     request<BenchState>("/connection-test", { signal }),
   benchmarkReceiver: (data: unknown) =>

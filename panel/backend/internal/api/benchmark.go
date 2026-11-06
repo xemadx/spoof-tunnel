@@ -99,8 +99,17 @@ func benchmarkEndpoint(c db.TunnelInstance, local, peer, source, peerSource stri
 	if e != nil {
 		return e
 	}
-	if cfg.LocalIP != local || cfg.PeerIP != peer || !containsSource(ips, source) || !containsSource(peers, peerSource) {
-		return errors.New("benchmark endpoints or fixed sources do not match the selected connection")
+	if cfg.LocalIP != local {
+		return errors.New("benchmark_local_ip_mismatch")
+	}
+	if cfg.PeerIP != peer {
+		return errors.New("benchmark_peer_ip_mismatch")
+	}
+	if !containsSource(ips, source) {
+		return errors.New("benchmark_source_not_in_pool")
+	}
+	if !containsSource(peers, peerSource) {
+		return errors.New("benchmark_peer_source_not_admitted")
 	}
 	return nil
 }
@@ -335,7 +344,7 @@ func (s *Server) receiverBenchmarkHook(ctx context.Context, target uint, version
 			if candidate.Mode != "remote" || candidate.SendTransport != benchmark.Carriers[plan.Index%5] || candidate.RecvTransport != benchmark.Carriers[plan.Index/5] {
 				return nil, errors.New("plan carrier pair does not match the tested result")
 			}
-			if e := benchmarkEndpoint(candidate, inv.B, inv.A, inv.SourceB, inv.SourceA); e != nil {
+			if e := s.benchmarkEndpoint(candidate, inv.B, inv.A, inv.SourceB, inv.SourceA); e != nil {
 				return nil, e
 			}
 			s.mutationMu.Lock()
@@ -413,7 +422,7 @@ func (s *Server) handleBenchmarkReceiver(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "select the remote half on the receiving server"})
 			return
 		}
-		if e := benchmarkEndpoint(inst, i.B, i.A, i.SourceB, i.SourceA); e != nil {
+		if e := s.benchmarkEndpoint(inst, i.B, i.A, i.SourceB, i.SourceA); e != nil {
 			c.JSON(400, gin.H{"error": e.Error()})
 			return
 		}
@@ -462,7 +471,7 @@ func (s *Server) handleBenchmarkStart(c *gin.Context) {
 			c.JSON(400, gin.H{"error": "select the local half on the controlling server"})
 			return
 		}
-		if e = benchmarkEndpoint(inst, i.A, i.B, i.SourceA, i.SourceB); e != nil {
+		if e = s.benchmarkEndpoint(inst, i.A, i.B, i.SourceA, i.SourceB); e != nil {
 			c.JSON(400, gin.H{"error": e.Error()})
 			return
 		}

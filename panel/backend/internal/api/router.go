@@ -144,6 +144,8 @@ func (s *Server) setupRoutes() {
 			protected.POST("/instances/:id/forwards", s.handleCreateForward)
 			protected.DELETE("/instances/:id/forwards/:ruleID", s.handleDeleteForward)
 
+			protected.GET("/instances/:id/benchmark-presets", s.handleBenchmarkPreset)
+
 			// Isolated carrier-pair benchmark
 			protected.GET("/connection-test", func(c *gin.Context) { c.JSON(200, s.benchmark.Status()) })
 			protected.POST("/connection-test/receiver", s.handleBenchmarkReceiver)

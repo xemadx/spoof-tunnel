@@ -48,3 +48,15 @@ Application is a separate explicit action after a cross-server validation previe
 | A result could be mistaken for installation | Separate preview and explicit two-server apply | Keep live connections intact during measurement |
 | Large table could widen a narrow screen | Bounded grid track and independently scrollable matrix | Preserve the mobile page width |
 | Native progress colour/width | Full-width progress using shared theme tokens | Consistent readable feedback |
+
+## v0.4.3: current source presets
+
+Existing-connection forms now read bounded presets from the selected record and its effective source pools, rather than the original single-IP fallback. With automatic peer sync, the authenticated engine manifest is used without requiring a prior visit to the pools tab or changing stored configuration. A verified selected local source is suggested when available; otherwise a configured candidate is suggested without a health claim. Peer membership is not a quality guarantee. Manual allowed choices remain fixed for all 25 cells. Field-specific errors distinguish local/peer real addresses and local/peer spoof membership.
+
+در v0.4.3، پس از انتخاب اتصال موجود، مشخصات از همان اتصال و استخر فعال دریافت می‌شوند. اگر مبدأ اولیه از استخر حذف شده باشد، فرم آن را پیشنهاد نمی‌کند. فهرست مجاز یادگرفته‌شدهٔ موتور هم برای تطبیق طرف مقابل لحاظ می‌شود. برای اصلاح فرم قبلی، صفحه را تازه کن و اتصال را دوباره انتخاب کن؛ سپس کد تازه بساز. مبدأ پیشنهادی را می‌توان با یک عضو مجاز دیگر عوض کرد؛ آزمون همچنان مبدأ ثابت دارد.
+
+| Before | After | Why |
+| --- | --- | --- |
+| Prefill from removed single-IP fallbacks | Read selected connection and effective pool presets | The form should generate values accepted by validation |
+| One generic English mismatch | Field-specific Persian errors | Identify the address or membership to correct |
+| Slow selection could replace a newer choice | Abort and generation-check preset reads | Keep form values synchronized with the selected record |

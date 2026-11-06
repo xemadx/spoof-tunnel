@@ -6,6 +6,7 @@ import {
   type BenchPreview,
   type BenchResult,
   type BenchState,
+  type BenchPreset,
   type TunnelInstance,
 } from "@/lib/api";
 import { Dialog } from "@/lib/dialog";
@@ -30,8 +31,26 @@ const PHASE: Record<string, string> = {
 };
 const number = (n: number, digits = 1) =>
   n.toLocaleString("fa-IR", { maximumFractionDigits: digits });
-const explain = (e: unknown) =>
-  e instanceof Error ? e.message : "عملیات انجام نشد؛ دوباره تلاش کنید.";
+const explain = (e: unknown) => {
+  const value = e instanceof Error ? e.message : "";
+  const errors: Record<string, string> = {
+    benchmark_local_ip_mismatch:
+      "آی‌پی واقعی همین سرور با اتصال انتخاب‌شده یکی نیست؛ تنظیمات اتصال را دوباره دریافت کن.",
+    benchmark_peer_ip_mismatch:
+      "آی‌پی واقعی طرف مقابل با اتصال انتخاب‌شده یکی نیست؛ اتصال و جهت دو سرور را بررسی کن.",
+    benchmark_source_not_in_pool:
+      "مبدأ جعلی همین سرور در استخر فعال این اتصال نیست؛ یکی از مبدأهای گروه‌های اعمال‌شده را وارد کن.",
+    benchmark_peer_source_not_admitted:
+      "مبدأ جعلی طرف مقابل در فهرست مجاز این اتصال نیست؛ مبدأ را اصلاح یا فهرست طرف مقابل را همگام کن.",
+    "benchmark endpoints or fixed sources do not match the selected connection":
+      "آی‌پی‌های واقعی یا مبدأهای ثابت با اتصال انتخاب‌شده یکی نیستند؛ هر چهار فیلد را با استخر فعال بررسی کن.",
+    "benchmark ports must match the selected receiver connection":
+      "پورت‌ها باید با همین اتصال برابر باشند؛ تنظیمات اتصال را دوباره دریافت کن.",
+    "benchmark ports must match the selected controller connection":
+      "پورت‌های کد طرف مقابل با این اتصال برابر نیستند؛ نیمهٔ درست اتصال را در دو پنل انتخاب کن.",
+  };
+  return errors[value] || value || "عملیات انجام نشد؛ دوباره تلاش کنید.";
+};
 function failure(s?: string) {
   if (!s) return "این ترکیب هنوز آزموده نشده است.";
   if (s.includes("no authenticated response"))
@@ -51,6 +70,11 @@ export default function ConnectionTestPage() {
   const [state, setState] = useState<BenchState>();
   const [instances, setInstances] = useState<TunnelInstance[]>([]);
   const [target, setTarget] = useState(0);
+  const [preset, setPreset] = useState<BenchPreset>();
+  const [presetLoading, setPresetLoading] = useState(false);
+  const [presetError, setPresetError] = useState("");
+  const presetSerial = useRef(0);
+  const presetController = useRef<AbortController | undefined>(undefined);
   const [code, setCode] = useState("");
   const [receiverCode, setReceiverCode] = useState("");
   const [name, setName] = useState("اتصال سنجیده‌شده");
@@ -117,6 +141,7 @@ export default function ConnectionTestPage() {
     return () => {
       mounted.current = false;
       controller.abort();
+      presetController.current?.abort();
       clearTimeout(timer);
     };
   }, []);
@@ -134,24 +159,60 @@ export default function ConnectionTestPage() {
       if (mounted.current) setBusy("");
     }
   };
+  const clearPreset = () => {
+    presetSerial.current++;
+    presetController.current?.abort();
+    setPreset(undefined);
+    setPresetLoading(false);
+    setPresetError("");
+  };
   const chooseTarget = (id: number) => {
     setTarget(id);
-    const inst = instances.find((v) => v.id === id);
-    if (!inst) return;
-    if (role === "remote")
-      setForm((f) => ({
-        ...f,
-        local_ip: inst.local_ip || "",
-        port_a: inst.client_port,
-        port_b: inst.listen_port,
-        peer_ip: inst.client_ip || "",
-        source: inst.spoof_ip || "",
-        peer_source: inst.peer_spoof_ip || "",
-      }));
-    else {
-      setName(inst.name);
-      setSubnet(inst.tun_address || "10.77.0.0/30");
-    }
+    clearPreset();
+    setError("");
+    if (!id) return;
+    const ticket = presetSerial.current,
+      controller = new AbortController();
+    presetController.current = controller;
+    setPresetLoading(true);
+    void api
+      .benchmarkPreset(id, controller.signal)
+      .then((next) => {
+        if (
+          !mounted.current ||
+          controller.signal.aborted ||
+          ticket !== presetSerial.current
+        )
+          return;
+        if (next.id !== id || next.role !== role)
+          throw Error("سمت اتصال انتخاب‌شده با نقش این سرور برابر نیست.");
+        setPreset(next);
+        if (role === "remote")
+          setForm({
+            local_ip: next.local_ip,
+            peer_ip: next.peer_ip,
+            source: next.source,
+            peer_source: next.peer_source,
+            port_a: next.send_port,
+            port_b: next.receive_port,
+          });
+        else {
+          setName(next.name);
+          setSubnet(next.subnet);
+        }
+      })
+      .catch((e) => {
+        if (
+          mounted.current &&
+          !controller.signal.aborted &&
+          ticket === presetSerial.current
+        )
+          setPresetError(explain(e));
+      })
+      .finally(() => {
+        if (mounted.current && ticket === presetSerial.current)
+          setPresetLoading(false);
+      });
   };
   const results = state?.results || [];
   const best = results.find((r) => r.index === state?.recommended);
@@ -245,6 +306,7 @@ export default function ConnectionTestPage() {
               aria-pressed={role === "local"}
               disabled={!!locked || !!busy}
               onClick={() => {
+                clearPreset();
                 setRole("local");
                 setTarget(0);
               }}
@@ -256,6 +318,7 @@ export default function ConnectionTestPage() {
               aria-pressed={role === "remote"}
               disabled={!!locked || !!busy}
               onClick={() => {
+                clearPreset();
                 setRole("remote");
                 setTarget(0);
               }}
@@ -290,6 +353,36 @@ export default function ConnectionTestPage() {
               کن. آزمون، اتصال فعلی را متوقف نمی‌کند.
             </small>
           </label>
+          {presetLoading && (
+            <p className="hint" role="status">
+              در حال دریافت تنظیمات و مبدأهای استخر فعال…
+            </p>
+          )}
+          {presetError && (
+            <div className="pool-note" role="alert">
+              <span>{presetError}</span>
+              <button
+                className="btn btn-ghost btn-sm"
+                disabled={presetLoading || !!busy}
+                onClick={() => chooseTarget(target)}
+              >
+                دریافت دوبارهٔ مشخصات اتصال
+              </button>
+            </div>
+          )}
+          {preset && (
+            <p className="hint">
+              آی‌پی‌های واقعی و پورت‌ها از همین اتصال دریافت شدند.{" "}
+              {preset.source_verified
+                ? "مبدأ پیشنهادی همین سرور از منتخب‌های تأییدشده است."
+                : "مبدأ پیشنهادی از استخر اعمال‌شده است؛ کیفیت آن در آزمون سنجیده می‌شود."}{" "}
+              {preset.peer_learned
+                ? "فهرست مجاز طرف مقابل از موتور فعال خوانده شد."
+                : "مبدأ طرف مقابل از فهرست مجاز ذخیره‌شده است."}{" "}
+              می‌توانی مبدأهای ثابت را با آی‌پی مجاز دیگری عوض کنی؛ استخر حین
+              آزمون نمی‌چرخد.
+            </p>
+          )}
           {role === "remote" ? (
             <>
               <div className="grid-2">
@@ -309,7 +402,10 @@ export default function ConnectionTestPage() {
                       inputMode="decimal"
                       autoComplete="off"
                       value={form[key]}
-                      disabled={!!locked || !!busy}
+                      readOnly={
+                        !!target && (key === "local_ip" || key === "peer_ip")
+                      }
+                      disabled={!!locked || !!busy || presetLoading}
                       onChange={(e) =>
                         setForm((f) => ({ ...f, [key]: e.target.value.trim() }))
                       }
@@ -335,7 +431,7 @@ export default function ConnectionTestPage() {
                         min={1}
                         max={65535}
                         value={form[key]}
-                        disabled={!!locked || !!busy}
+                        disabled={!!locked || !!busy || !!target}
                         onChange={(e) =>
                           setForm((f) => ({
                             ...f,
@@ -370,6 +466,9 @@ export default function ConnectionTestPage() {
                   disabled={
                     !!locked ||
                     !!busy ||
+                    presetLoading ||
+                    (!!target && !preset) ||
+                    !!presetError ||
                     !Object.values(form).every(Boolean) ||
                     !validPort(form.port_a) ||
                     !validPort(form.port_b)
@@ -526,6 +625,9 @@ export default function ConnectionTestPage() {
                   disabled={
                     !!locked ||
                     !!busy ||
+                    presetLoading ||
+                    (!!target && !preset) ||
+                    !!presetError ||
                     !code.trim() ||
                     (!target && (!name.trim() || !subnet.trim()))
                   }
