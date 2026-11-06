@@ -8,6 +8,7 @@ import (
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -212,4 +213,43 @@ func TestWatchdogRestartSkippedAfterManualStop(t *testing.T) {
 	if status, _ := m.InstanceStatus(c.ID); status != StatusStopped {
 		t.Fatalf("status after skipped watchdog restart: %s", status)
 	}
+}
+
+func TestWatchdogPeerTransitionIsLogged(t *testing.T) {
+	dir := t.TempDir()
+	m, c := watchdogTestManager(t, dir)
+	if err := m.StartInstance(c.ID); err != nil {
+		t.Fatal(err)
+	}
+	contains := func(needle string) bool {
+		for _, e := range m.Events(100) {
+			if e.InstanceID == c.ID && strings.Contains(e.Message, needle) {
+				return true
+			}
+		}
+		return false
+	}
+	waitFor := func(needle string) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for !contains(needle) {
+			if time.Now().After(deadline) {
+				t.Fatalf("console never reported %q; events: %+v", needle, m.Events(100))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	// Connected first: the first connection after a start is not a
+	// transition and must not be reported as one.
+	watchdogSetPeer(t, m, c.ID, true)
+	time.Sleep(100 * time.Millisecond)
+	if contains("peer connection") {
+		t.Fatal("first connection was reported as a transition")
+	}
+	// Then the peer is lost: the console must say so, with the reason.
+	watchdogSetPeer(t, m, c.ID, false)
+	waitFor("peer connection lost")
+	// And the restore is reported too.
+	watchdogSetPeer(t, m, c.ID, true)
+	waitFor("peer connection restored")
 }

@@ -10,6 +10,8 @@ import {
   type TunnelInstance,
 } from "@/lib/api";
 import { Dialog } from "@/lib/dialog";
+import { copyText } from "@/lib/clipboard";
+import { explainBenchmarkError as explain } from "@/lib/explain";
 import Link from "@/lib/link";
 
 const CARRIERS = ["icmp", "udp", "tcp", "ipip", "experimental"];
@@ -31,26 +33,6 @@ const PHASE: Record<string, string> = {
 };
 const number = (n: number, digits = 1) =>
   n.toLocaleString("fa-IR", { maximumFractionDigits: digits });
-const explain = (e: unknown) => {
-  const value = e instanceof Error ? e.message : "";
-  const errors: Record<string, string> = {
-    benchmark_local_ip_mismatch:
-      "آی‌پی واقعی همین سرور با اتصال انتخاب‌شده یکی نیست؛ تنظیمات اتصال را دوباره دریافت کن.",
-    benchmark_peer_ip_mismatch:
-      "آی‌پی واقعی طرف مقابل با اتصال انتخاب‌شده یکی نیست؛ اتصال و جهت دو سرور را بررسی کن.",
-    benchmark_source_not_in_pool:
-      "مبدأ جعلی همین سرور در استخر فعال این اتصال نیست؛ یکی از مبدأهای گروه‌های اعمال‌شده را وارد کن.",
-    benchmark_peer_source_not_admitted:
-      "مبدأ جعلی طرف مقابل در فهرست مجاز این اتصال نیست؛ مبدأ را اصلاح یا فهرست طرف مقابل را همگام کن.",
-    "benchmark endpoints or fixed sources do not match the selected connection":
-      "آی‌پی‌های واقعی یا مبدأهای ثابت با اتصال انتخاب‌شده یکی نیستند؛ هر چهار فیلد را با استخر فعال بررسی کن.",
-    "benchmark ports must match the selected receiver connection":
-      "پورت‌ها باید با همین اتصال برابر باشند؛ تنظیمات اتصال را دوباره دریافت کن.",
-    "benchmark ports must match the selected controller connection":
-      "پورت‌های کد طرف مقابل با این اتصال برابر نیستند؛ نیمهٔ درست اتصال را در دو پنل انتخاب کن.",
-  };
-  return errors[value] || value || "عملیات انجام نشد؛ دوباره تلاش کنید.";
-};
 function failure(s?: string) {
   if (!s) return "این ترکیب هنوز آزموده نشده است.";
   if (s.includes("no authenticated response"))
@@ -98,7 +80,6 @@ export default function ConnectionTestPage() {
   const [subnet, setSubnet] = useState("10.77.0.0/30");
   const [rate, setRate] = useState(20);
   const [seconds, setSeconds] = useState(3);
-  const [maxRate, setMaxRate] = useState(100);
   const [escalate, setEscalate] = useState(true);
   const [allow, setAllow] = useState(false);
   const [form, setForm] = useState({
@@ -130,6 +111,15 @@ export default function ConnectionTestPage() {
   const active =
     !!state && ["waiting", "running", "applying"].includes(state.status);
   const locked = active || (state?.status === "done" && !state.applied);
+  // Worst-case ladder cost: every cell climbs every rung to the 500 Mbps
+  // measurement ceiling. In practice the ladder stops as soon as the link
+  // saturates, so real usage is far below this.
+  const ladderRungs = (() => {
+    const rungs = [rate];
+    while (rungs[rungs.length - 1] < 500)
+      rungs.push(Math.min(rungs[rungs.length - 1] * 2, 500));
+    return rungs;
+  })();
   useEffect(() => {
     mounted.current = true;
     void api
@@ -254,7 +244,6 @@ export default function ConnectionTestPage() {
           options: {
             rate_mbps: rate,
             seconds,
-            max_rate_mbps: maxRate,
             escalate,
           },
         }),
@@ -297,6 +286,8 @@ export default function ConnectionTestPage() {
       {error && (
         <div className="alert alert-error" role="alert">
           {error}
+          <br />
+          <Link href="/dashboard/logs">جزئیات و علت در لاگ کنسول</Link>
         </div>
       )}
       {pollError && (
@@ -524,12 +515,11 @@ export default function ConnectionTestPage() {
                     className="btn btn-ghost btn-sm"
                     onClick={() =>
                       void action("copy", async () => {
-                        try {
-                          if (!navigator.clipboard) throw Error();
-                          await navigator.clipboard.writeText(receiverCode);
+                        if (await copyText(receiverCode)) {
                           setCopied(true);
                           setCopyHint("");
-                        } catch {
+                          setTimeout(() => setCopied(false), 2000);
+                        } else {
                           codeField.current?.focus();
                           codeField.current?.select();
                           setCopyHint(
@@ -631,41 +621,29 @@ export default function ConnectionTestPage() {
                   </select>
                 </label>
               </div>
-              <div className="grid-2">
-                <label className="field">
-                  <span>سقف حداکثر برای سنجش دوباره</span>
-                  <select
-                    className="input"
-                    value={maxRate}
-                    disabled={!!locked || !!busy || !escalate}
-                    onChange={(e) => setMaxRate(Number(e.target.value))}
-                  >
-                    {[20, 40, 60, 100, 200, 500].map((n) => (
-                      <option key={n} value={n}>
-                        {number(n, 0)} Mbps
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="pool-check">
-                  <input
-                    type="checkbox"
-                    checked={escalate}
-                    disabled={!!locked || !!busy}
-                    onChange={(e) => setEscalate(e.target.checked)}
-                  />
-                  <span>
-                    اگر جهتی به سقف رسید، با سقف حداکثر دوباره بسنج تا ماکسیمم
-                    واقعی معلوم شود
-                  </span>
-                </label>
-              </div>
+              <label className="pool-check">
+                <input
+                  type="checkbox"
+                  checked={escalate}
+                  disabled={!!locked || !!busy}
+                  onChange={(e) => setEscalate(e.target.checked)}
+                />
+                <span>
+                  آزمون خودش نرخ را دوبرابر می‌کند تا ماکسیمم واقعی معلوم
+                  شود؛ سقف انتخابی ندارد
+                </span>
+              </label>
               <div className="ct-budget">
                 <strong>۲۵ ترکیب · دو جهت جداگانه</strong>
                 <span>
                   تا حدود{" "}
                   {number(
-                    ((rate + (escalate ? maxRate : 0)) * seconds * 25 * 2) /
+                    ((escalate
+                      ? ladderRungs.reduce((a, b) => a + b, 0)
+                      : rate) *
+                      seconds *
+                      25 *
+                      2) /
                       8,
                     0,
                   )}{" "}
@@ -673,9 +651,9 @@ export default function ConnectionTestPage() {
                 </span>
                 <small>
                   برای هر ترکیب ۱۲ نمونهٔ رفت‌وبرگشت ثبت می‌شود. اگر جهتی به
-                  سقف پایه برسد، همان ترکیب یک بار دیگر با سقف حداکثر سنجیده
-                  می‌شود تا ماکسیمم واقعی معلوم شود؛ فقط ترکیب‌های موفق دوباره
-                  سنجیده می‌شوند.
+                  نرخ پایه برسد، همان ترکیب با نرخ دوبرابر دوباره سنجیده
+                  می‌شود تا جایی که لینک اشباع شود؛ فقط ترکیب‌های موفق دوباره
+                  سنجیده می‌شوند و حداکثر اندازه‌گیری ۵۰۰ مگابیت بر ثانیه است.
                 </small>
               </div>
               <div className="ct-actions">
@@ -786,6 +764,8 @@ export default function ConnectionTestPage() {
           {state.error && (
             <p className="alert alert-error" role="alert">
               {applyError(state.error) ?? state.error}
+              <br />
+              <Link href="/dashboard/logs">جزئیات و علت در لاگ کنسول</Link>
             </p>
           )}
           {best && (
@@ -809,23 +789,25 @@ export default function ConnectionTestPage() {
                 </p>
                 {(best.upload.capped || best.download.capped) && (
                   <p className="ct-ceiling">
-                    حداقل یک جهت هنوز به سقف حداکثر (
-                    {number(
-                      best.rate_mbps || state.options.max_rate_mbps || rate,
-                      0,
-                    )}{" "}
-                    Mbps) رسیده؛ ظرفیت واقعی بالاتر از این است — برای
-                    اندازه‌گیری بالاتر، سقف حداکثر را بیشتر کن.
+                    حداقل یک جهت هنوز به سقف اندازه‌گیری (
+                    {number(best.rate_mbps || rate, 0)} Mbps) رسیده؛ ظرفیت
+                    واقعی بالاتر از این است. این سقف، حد فرستندهٔ آزمون است نه
+                    یک تنظیم.
                   </p>
                 )}
                 {best.escalated &&
                   !best.upload.capped &&
                   !best.download.capped && (
                     <p className="hint">
-                      این ترکیب پس از رسیدن به سقف پایه، با سقف بالاتر دوباره
-                      سنجیده شد و سرعت واقعی آن معلوم است.
+                      این ترکیب پس از رسیدن به نرخ پایه، با دوبرابر کردن نرخ
+                      دوباره سنجیده شد و سرعت واقعی آن معلوم است.
                     </p>
                   )}
+                <p className="hint">
+                  {target
+                    ? `روی اتصال «${instances.find((i) => i.id === target)?.name ?? `#${target}`}» اعمال می‌شود؛ اتصال فعلی در هر دو سرور جایگزین و راه‌اندازی می‌شود.`
+                    : "اتصال مقصد انتخاب نشده؛ آزمون اتصالِ هم‌سان با همین آی‌پی‌ها و زیرشبکه را پیدا و جایگزین می‌کند، وگرنه اتصال جدید می‌سازد؛ در هر دو حالت هر دو سرور راه‌اندازی می‌شوند."}
+                </p>
               </div>
               {role === "local" &&
                 state.status === "done" &&
@@ -922,7 +904,7 @@ export default function ConnectionTestPage() {
                 <>
                   <div className="ct-metrics">
                     <div>
-                      <small>سقف سنجش نهایی</small>
+                      <small>نرخ سنجش نهایی</small>
                       <strong dir="ltr">
                         {number(
                           detail.rate_mbps || state.options.rate_mbps,
@@ -932,8 +914,8 @@ export default function ConnectionTestPage() {
                       </strong>
                       <small>
                         {detail.escalated
-                          ? "پس از رسیدن به سقف پایه، با سقف بالاتر دوباره سنجیده شد"
-                          : "در سقف پایه سنجیده شد"}
+                          ? `با دوبرابر کردن نرخ در ${number(detail.rounds || 2, 0)} مرحله سنجیده شد`
+                          : "در نرخ پایه سنجیده شد"}
                       </small>
                     </div>
                     <div>
@@ -997,7 +979,7 @@ export default function ConnectionTestPage() {
           <div className="ct-preview">
             <p>
               {preview.replace
-                ? "اتصال انتخاب‌شده متوقف می‌شود و با حامل‌های جدید دوباره راه‌اندازی می‌شود."
+                ? "اتصال فعلی در هر دو سرور متوقف می‌شود و با حامل‌های جدید دوباره راه‌اندازی می‌شود."
                 : "یک اتصال مکمل روی هر دو سرور ساخته و راه‌اندازی می‌شود."}
             </p>
             <dl>

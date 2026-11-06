@@ -58,9 +58,10 @@ type Options struct {
 
 func (o Options) Validate() error {
 	// RateMbps is the measurement ceiling, not only the base rate: the
-	// escalation round re-measures a capped cell at up to 500 Mbps using
-	// the same Options, so the ceiling must admit it. The base rate is
-	// bounded to 1–60 Mbps at the API entry point (handleBenchmarkStart).
+	// ladder re-measures a capped cell at doubled rates up to 500 Mbps
+	// using the same Options, so the ceiling must admit it. The base
+	// rate is bounded to 1–60 Mbps at the API entry point
+	// (handleBenchmarkStart).
 	if o.RateMbps < 1 || o.RateMbps > 500 || o.Seconds < 2 || o.Seconds > 8 {
 		return errors.New("benchmark rate must be 1–500 Mbps and duration 2–8 seconds per direction")
 	}
@@ -70,13 +71,38 @@ func (o Options) Validate() error {
 	return nil
 }
 
-// maxRate is the ceiling for the escalation round: the configured
-// maximum, or 200 Mbps when escalation is on and no maximum was given.
+// maxRate is the measurement ceiling for the ladder: the fastest the
+// sender can offer reliably. It is a property of the measurement, not a
+// user-chosen cap — the frontend no longer asks for a maximum, and the
+// ladder climbs to saturation or this ceiling, whichever comes first.
 func (o Options) maxRate() int {
 	if o.MaxRateMbps != 0 {
 		return o.MaxRateMbps
 	}
-	return 200
+	return 500
+}
+
+// ladderNextRate doubles the offered rate for the next ladder rung,
+// capped at the measurement ceiling. It returns 0 when the current rate
+// already reached the ceiling, so the ladder stops there.
+func ladderNextRate(curRate, ceiling int) int {
+	if curRate >= ceiling {
+		return 0
+	}
+	next := curRate * 2
+	if next > ceiling {
+		next = ceiling
+	}
+	return next
+}
+
+// minDirectionMbps is the weaker direction's measured goodput: the
+// capacity of a cell is the capacity of its weaker direction.
+func minDirectionMbps(r Result) float64 {
+	if r.Upload.Mbps < r.Download.Mbps {
+		return r.Upload.Mbps
+	}
+	return r.Download.Mbps
 }
 func (o Options) count() int { return o.RateMbps * 1000000 * o.Seconds / (8 * payloadBytes) }
 
@@ -104,9 +130,11 @@ type Result struct {
 	Score       float64   `json:"score"`
 	// RateMbps is the rate of the round that produced this result; when
 	// Escalated is set, the base rate was capped and this result comes
-	// from the re-measurement at the ceiling.
+	// from a later ladder rung. Rounds counts the measurement rounds
+	// this cell took (1 when only the base rate was measured).
 	RateMbps  int  `json:"rate_mbps,omitempty"`
 	Escalated bool `json:"escalated,omitempty"`
+	Rounds    int  `json:"rounds,omitempty"`
 }
 type Snapshot struct {
 	Endpoints   Endpoints `json:"endpoints"`
@@ -686,18 +714,42 @@ func (s *Session) run(o Options) {
 		if responsive {
 			lastResponsive = index
 		}
-		// A cell that hits the configured rate in either direction has
-		// not measured capacity, only the ceiling. Re-measure once at
-		// the maximum rate: if the link is slower than the ceiling, the
-		// second round reports the true maximum; if it is still capped,
-		// the reported rate is a lower bound, not the capacity.
-		if r.Status == "passed" && o.Escalate && (r.Upload.Capped || r.Download.Capped) && o.maxRate() > o.RateMbps {
-			ceiling := o
-			ceiling.RateMbps = o.maxRate()
-			if r2, _ := s.measureCell(index, ceiling); r2.Status == "passed" {
+		// A cell that hits the offered rate in either direction has not
+		// measured capacity, only the offer. Climb a doubling ladder
+		// with no user-chosen maximum: each rung doubles the offered
+		// rate until the link stops keeping up (a round neither
+		// direction caps, or doubling the offer buys at most 5% more
+		// delivered goodput) or the 500 Mbps measurement ceiling is
+		// reached. The reported result is the rung with the highest
+		// weaker-direction goodput, so the maximum is measured, not
+		// assumed.
+		if r.Status == "passed" && o.Escalate && (r.Upload.Capped || r.Download.Capped) {
+			best := r
+			prevMin := minDirectionMbps(r)
+			cur := r
+			for next := ladderNextRate(cur.RateMbps, o.maxRate()); next != 0; next = ladderNextRate(cur.RateMbps, o.maxRate()) {
+				round := o
+				round.RateMbps = next
+				r2, _ := s.measureCell(index, round)
+				if r2.Status != "passed" {
+					break
+				}
 				r2.Escalated = true
-				r = r2
+				r2.Rounds = cur.Rounds + 1
+				curMin := minDirectionMbps(r2)
+				if curMin > minDirectionMbps(best) {
+					best = r2
+				}
+				cur = r2
+				if !r2.Upload.Capped && !r2.Download.Capped {
+					break
+				}
+				if curMin <= prevMin*1.05 {
+					break
+				}
+				prevMin = curMin
 			}
+			r = best
 		}
 		s.record(r)
 		_, _ = s.rpc(s.ctx, a, b, "record", index, r, 3)
@@ -741,7 +793,7 @@ func (s *Session) run(o Options) {
 // a fallback route when nothing passed).
 func (s *Session) measureCell(index int, o Options) (Result, bool) {
 	a, b := Carriers[index/5], Carriers[index%5]
-	r := Result{Index: index, Send: a, Receive: b, Status: "failed", RateMbps: o.RateMbps}
+	r := Result{Index: index, Send: a, Receive: b, Status: "failed", RateMbps: o.RateMbps, Rounds: 1}
 	s.mu.Lock()
 	s.view.Current = index
 	s.view.Phase = "handshake"

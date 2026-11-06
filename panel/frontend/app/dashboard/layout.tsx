@@ -10,6 +10,7 @@ import {
   IconPair,
   IconTunnels,
   IconTester,
+  IconTerminal,
   IconSettings,
   IconLogout,
   IconShield,
@@ -22,6 +23,7 @@ const NAV_ITEMS = [
   { path: "/dashboard/tester", icon: IconTester, label: "آزمون اسپوف" },
   { path: "/dashboard/connection-test", icon: IconPair, label: "آزمون اتصال" },
   { path: "/dashboard/settings", icon: IconSettings, label: "تنظیمات" },
+  { path: "/dashboard/logs", icon: IconTerminal, label: "لاگ‌ها" },
 ];
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {

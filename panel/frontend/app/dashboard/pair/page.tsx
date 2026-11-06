@@ -4,6 +4,7 @@ import Link from "@/lib/link";
 import { api } from "@/lib/api";
 import { useBasePath } from "@/lib/basepath";
 import { useToast } from "@/lib/toast";
+import { copyText } from "@/lib/clipboard";
 import { IconDownload, IconCopy, IconCheck } from "@/lib/icons";
 
 type End = Record<string, string | number | boolean>;
@@ -124,12 +125,11 @@ export default function PairPage() {
 
   const copy = async (role: "local" | "remote") => {
     if (!result) return;
-    try {
-      await navigator.clipboard.writeText(JSON.stringify(result[role], null, 2));
+    if (await copyText(JSON.stringify(result[role], null, 2))) {
       setCopied(role);
       toast.success(`تنظیمات سمت ${role === "local" ? "ایران" : "خارج"} در کلیپ‌بورد کپی شد.`);
       setTimeout(() => setCopied(""), 1800);
-    } catch {
+    } else {
       setError("کپی در مرورگر ممکن نشد؛ از دکمهٔ دانلود استفاده کن.");
     }
   };

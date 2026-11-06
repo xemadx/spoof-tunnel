@@ -148,10 +148,11 @@ func TestBenchmarkEscalationMeasuresAboveBaseRate(t *testing.T) {
 						t.Fatalf("cell %d did not pass: %+v", r.Index, r)
 					}
 					// Loopback is far faster than 1 Mbps, so every cell
-					// must have escalated to the 2 Mbps ceiling, and the
-					// reported goodput must come from that round.
-					if !r.Escalated || r.RateMbps != 2 {
-						t.Fatalf("cell %d was not re-measured at the ceiling: %+v", r.Index, r)
+					// must have climbed the ladder to the 2 Mbps
+					// ceiling in 2 rounds, and the reported goodput
+					// must come from that round.
+					if !r.Escalated || r.RateMbps != 2 || r.Rounds != 2 {
+						t.Fatalf("cell %d did not climb to the ceiling: %+v", r.Index, r)
 					}
 					if r.Upload.Mbps <= 1 || r.Download.Mbps <= 1 {
 						t.Fatalf("cell %d reports base-rate goodput after escalation: %+v", r.Index, r)
@@ -172,8 +173,8 @@ func TestOptionsEscalationValidation(t *testing.T) {
 	if e := (Options{RateMbps: 20, Seconds: 3, Escalate: true}).Validate(); e != nil {
 		t.Fatal(e)
 	}
-	if (Options{RateMbps: 20, Seconds: 3, Escalate: true}).maxRate() != 200 {
-		t.Fatal("default escalation ceiling is not 200 Mbps")
+	if (Options{RateMbps: 20, Seconds: 3, Escalate: true}).maxRate() != 500 {
+		t.Fatal("default ladder ceiling is not 500 Mbps")
 	}
 	for _, bad := range []Options{
 		{RateMbps: 20, Seconds: 3, MaxRateMbps: 10},

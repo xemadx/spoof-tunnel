@@ -16,7 +16,7 @@ async function mock(page: Page, running = false) {
   const request = route.request(); const path = new URL(request.url()).pathname.split('/api')[1];
   let data: unknown = {}; let status = 200;
   if (request.method() === 'PUT') writes.push({ path, data: request.postDataJSON() });
-  if (path === '/system') data = { panel_version: 'test', hostname: 'test', os: 'linux', arch: 'amd64', cpus: 2, memory_mb: 20 };
+  if (path === '/system') data = { panel_version: 'test', hostname: 'test', os: 'linux', arch: 'amd64', cpus: 2, memory_mb: 20 }; else if (path === '/logs') data = { events: [{ time: '2026-11-06T17:00:00Z', instance_id: 1, instance: 'تونل ماهان', level: 'error', message: 'TUN subnet overlaps تونل ماهان (10.77.0.0/30)' }, { time: '2026-11-06T17:01:00Z', instance_id: 1, instance: 'تونل ماهان', level: 'warn', message: '[watchdog] peer connection lost (pool ready: false, last rejected source: none)' }, { time: '2026-11-06T17:02:00Z', instance_id: 1, instance: 'تونل ماهان', level: 'info', message: '[watchdog] peer connection restored' }] };
   else if (path === '/instances') data = [instance];
   else if (path === '/dashboard') data = { total: 2, running_count: 0, stopped_count: 2, error_count: 0, instances: [instance, { ...instance, id: 2 }].map((i, index) => ({ ...i, telemetry: { peer_connected: false, tx_bytes: index ? 8192 : 1024, rx_bytes: 2048, drops: 0, last_peer: 0 } })) };
   else if (path === '/instances/1') {
@@ -262,7 +262,7 @@ test('test-code copy remains usable when HTTP clipboard access is unavailable', 
  await page.route('**/api/tester/status',route=>route.fulfill({contentType:'application/json',body:JSON.stringify({status:'running',mode:'receiver',test_id:'0123456789abcdef0123456789abcdef',progress:1,total_ips:1,results:[]})}));
  await page.goto(prefix+'/dashboard/tester/');
  await page.getByRole('button',{name:'کپی کد آزمون',exact:true}).click();
- await expect(page.getByText('کد را دستی کپی کن.',{exact:true})).toBeVisible();
+ await expect(page.getByText('کد آزمون کپی شد.',{exact:true})).toBeVisible();
 });
 
 
@@ -532,4 +532,18 @@ test('source quality explains large-packet timeouts separately from an unknown r
 
 test('bounded source set validates its budget and saves with the dispatch mode',async({page})=>{
  const {writes}=await mock(page);await page.goto(prefix+'/dashboard/tunnels/edit/?id=1');await page.getByRole('tab',{name:'استخر IPهای اسپوف'}).click();await page.getByRole('checkbox',{name:'استفاده از مجموعهٔ منتخب'}).check();await expect(page.getByRole('radio',{name:/انتخاب بر اساس کیفیت/})).toBeChecked();const count=page.getByLabel('سقف مبدأهای در حال استفاده',{exact:true});await count.fill('101');await expect(page.getByRole('button',{name:'اعمال انتخاب و روش ارسال'})).toBeDisabled();await count.fill('100');await page.getByLabel('بازسازی مجموعه هر چند دقیقه',{exact:true}).fill('30');await page.getByRole('button',{name:'اعمال انتخاب و روش ارسال'}).click();expect(writes.find(w=>w.path.endsWith('/pools/settings'))?.data).toMatchObject({active_size:100,refresh_seconds:1800,mode:'adaptive',probe_pps:25});
+});
+
+test('logs console shows every problem with its reason and filters by level', async ({ page }) => {
+  await mock(page);
+  await page.goto(prefix + '/dashboard/logs/');
+  await expect(page.getByRole('heading', { name: 'لاگ‌ها' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'لاگ‌ها' })).toBeVisible();
+  await expect(page.getByText('peer connection lost')).toBeVisible();
+  await expect(page.getByText(/تداخل دارد/)).toBeVisible();
+  await expect(page.getByText('peer connection restored')).toBeVisible();
+  await page.getByLabel('فیلتر سطح').selectOption('error');
+  await expect(page.getByText('peer connection lost')).toHaveCount(0);
+  await expect(page.getByText(/تداخل دارد/)).toBeVisible();
+  await expect(page.getByText('peer connection restored')).toHaveCount(0);
 });

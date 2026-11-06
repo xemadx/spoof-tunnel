@@ -20,13 +20,18 @@ async function mock(page:Page,initial:BenchState={...complete,status:'idle',role
  await route.fulfill({contentType:'application/json',body:JSON.stringify(data)})});return {writes,setState:(s:BenchState)=>{state=s}}
 }
 test('starting the benchmark does not create or stop a tunnel',async({page})=>{
- const {writes}=await mock(page);await page.goto(root);await page.getByLabel('کد موقت طرف مقابل').fill('temporary-code');await expect(page.getByText(/۲٬۲۵۰ MB/)).toBeVisible();await page.getByRole('button',{name:'شروع آزمون ۲۵ ترکیب'}).click();await expect(page.getByRole('status')).toContainText('سنجش تأخیر');await expect(page.getByLabel('کد موقت طرف مقابل')).toBeDisabled();expect(writes).toHaveLength(1);expect(writes[0].path).toBe('/connection-test/start');expect(writes[0].body.options).toEqual({rate_mbps:20,seconds:3,max_rate_mbps:100,escalate:true});await page.getByRole('button',{name:'توقف آزمون'}).click();await page.getByRole('button',{name:'طرف مقابل · معمولاً خارج'}).click();await expect(page.getByLabel('آی‌پی واقعی همین سرور')).toBeVisible();
+ const {writes}=await mock(page);await page.goto(root);await page.getByLabel('کد موقت طرف مقابل').fill('temporary-code');await expect(page.getByText(/۲۱٬۰۰۰ MB/)).toBeVisible();await page.getByRole('button',{name:'شروع آزمون ۲۵ ترکیب'}).click();await expect(page.getByRole('status')).toContainText('سنجش تأخیر');await expect(page.getByLabel('کد موقت طرف مقابل')).toBeDisabled();expect(writes).toHaveLength(1);expect(writes[0].path).toBe('/connection-test/start');expect(writes[0].body.options).toEqual({rate_mbps:20,seconds:3,escalate:true});await page.getByRole('button',{name:'توقف آزمون'}).click();await page.getByRole('button',{name:'طرف مقابل · معمولاً خارج'}).click();await expect(page.getByLabel('آی‌پی واقعی همین سرور')).toBeVisible();
 });
 test('receiver creates a scoped code with explicit apply capability',async({page})=>{
  const {writes}=await mock(page);await page.goto(root);await page.getByRole('button',{name:'طرف مقابل · معمولاً خارج'}).click();for(const [label,value] of [['آی‌پی واقعی همین سرور','192.0.2.2'],['آی‌پی واقعی سرور کنترل‌کننده','192.0.2.1'],['مبدأ جعلی برای ارسال همین سرور','198.51.100.2'],['مبدأ جعلی برای ارسال سرور کنترل‌کننده','198.51.100.1']])await page.getByLabel(label,{exact:true}).fill(value);await page.getByRole('checkbox',{name:/اجازهٔ ساخت یا تغییر/}).check();await page.getByRole('button',{name:'ساخت کد موقت و انتظار'}).click();await expect(page.getByLabel('کد آزمون اتصال')).toHaveValue('ephemeral-test-code');expect(writes[0].body).toMatchObject({allow_apply:true,port_a:39090,port_b:39091,source:'198.51.100.2',peer_source:'198.51.100.1'});
 });
 test('result preview requires a separate explicit approval',async({page})=>{
- const {writes}=await mock(page,complete);await page.goto(root);await expect(page.getByText('حداقل یک جهت هنوز به سقف حداکثر',{exact:false})).toBeVisible();await expect(page.getByText('سقف سنجش نهایی')).toBeVisible();await page.getByRole('button',{name:'بررسی و تأیید پیشنهاد'}).click();await expect(page.getByRole('dialog')).toBeVisible();expect(writes.map(w=>w.path)).toEqual(['/connection-test/preview']);await page.getByRole('button',{name:'تأیید و راه‌اندازی دو سرور'}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByRole('heading',{name:'در حال اعمال نتیجه'})).toBeVisible();expect(writes.map(w=>w.path)).toEqual(['/connection-test/preview','/connection-test/apply']);expect(writes[1].body).toEqual({token:'approved-plan'});await expect(page.getByRole('button',{name:'پایان نشست'})).toHaveCount(0);
+ const {writes}=await mock(page,complete);await page.goto(root);await expect(page.getByText('حداقل یک جهت هنوز به سقف اندازه‌گیری',{exact:false})).toBeVisible();await expect(page.getByText('نرخ سنجش نهایی')).toBeVisible();await page.getByRole('button',{name:'بررسی و تأیید پیشنهاد'}).click();await expect(page.getByRole('dialog')).toBeVisible();expect(writes.map(w=>w.path)).toEqual(['/connection-test/preview']);await page.getByRole('button',{name:'تأیید و راه‌اندازی دو سرور'}).click();await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.getByRole('heading',{name:'در حال اعمال نتیجه'})).toBeVisible();expect(writes.map(w=>w.path)).toEqual(['/connection-test/preview','/connection-test/apply']);expect(writes[1].body).toEqual({token:'approved-plan'});await expect(page.getByRole('button',{name:'پایان نشست'})).toHaveCount(0);
+});
+test('receiver code copies on plain HTTP without the clipboard API',async({page})=>{
+ await mock(page);
+ await page.addInitScript(()=>Object.defineProperty(navigator,'clipboard',{value:undefined,configurable:true}));
+ await page.goto(root);await page.getByRole('button',{name:'طرف مقابل · معمولاً خارج'}).click();for(const [label,value] of [['آی‌پی واقعی همین سرور','192.0.2.2'],['آی‌پی واقعی سرور کنترل‌کننده','192.0.2.1'],['مبدأ جعلی برای ارسال همین سرور','198.51.100.2'],['مبدأ جعلی برای ارسال سرور کنترل‌کننده','198.51.100.1']])await page.getByLabel(label,{exact:true}).fill(value);await page.getByRole('button',{name:'ساخت کد موقت و انتظار'}).click();await expect(page.getByLabel('کد آزمون اتصال')).toHaveValue('ephemeral-test-code');await page.getByRole('button',{name:'کپی کد',exact:true}).click();await expect(page.getByRole('button',{name:'کپی شد',exact:true})).toBeVisible();
 });
 test('failed combination shows its cause and cannot be applied',async({page})=>{
  await mock(page,complete);await page.goto(root);await page.getByRole('button',{name:/ارسال ICMP، برگشت IP · ۲۵۳: ناموفق/}).click();await expect(page.locator('.ct-detail')).toContainText('پاسخ احرازشدهٔ دوطرفه دریافت نشد');await expect(page.locator('.ct-detail button')).toHaveCount(0);
@@ -51,4 +56,18 @@ test('preset fetch failure blocks a stale code and offers retry',async({page})=>
 });
 test('source admission errors identify the field in Persian',async({page})=>{
  await mock(page);await page.route('**/api/connection-test/receiver',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'benchmark_peer_source_not_admitted'})}));await page.goto(root);await page.getByRole('button',{name:'طرف مقابل · معمولاً خارج'}).click();for(const [label,value] of [['آی‌پی واقعی همین سرور','192.0.2.2'],['آی‌پی واقعی سرور کنترل‌کننده','192.0.2.1'],['مبدأ جعلی برای ارسال همین سرور','198.51.100.2'],['مبدأ جعلی برای ارسال سرور کنترل‌کننده','198.51.100.1']])await page.getByLabel(label,{exact:true}).fill(value);await page.getByRole('button',{name:'ساخت کد موقت و انتظار'}).click();await expect(page.locator('.ct-page').getByRole('alert')).toContainText('مبدأ جعلی طرف مقابل در فهرست مجاز این اتصال نیست');
+});
+
+test('a subnet overlap is explained in Persian with a link to the logs', async ({ page }) => {
+  await mock(page, complete);
+  await page.route('**/api/connection-test/preview', (route) =>
+    route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'TUN subnet overlaps تونل ماهان (10.77.0.0/30)' }) }),
+  );
+  await page.goto(root);
+  await page.getByRole('button', { name: 'بررسی و تأیید پیشنهاد' }).click();
+  const banner = page.locator('div.alert.alert-error');
+  await expect(banner).toContainText('تداخل دارد');
+  await expect(banner).toContainText('تونل ماهان');
+  await expect(page.getByRole('link', { name: 'جزئیات و علت در لاگ کنسول' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 });

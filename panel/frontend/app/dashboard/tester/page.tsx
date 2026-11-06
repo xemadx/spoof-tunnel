@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useToast } from "@/lib/toast";
+import { copyText } from "@/lib/clipboard";
 import {
   IconTester,
   IconPlay,
@@ -422,7 +423,7 @@ const next = await api.testerStatus();
             </div>
           )}
 
-          {state.test_id && <div className="banner ok"><span>کد این آزمون: </span><code dir="ltr" style={{overflowWrap:"anywhere",userSelect:"all"}}>{state.test_id}</code><button type="button" className="btn btn-ghost btn-sm" onClick={async()=>{try{if(!navigator.clipboard)throw new Error("clipboard unavailable");await navigator.clipboard.writeText(state.test_id!);toast.success("کد آزمون کپی شد.");}catch{toast.error("کد را دستی کپی کن.");}}}>کپی کد آزمون</button></div>}
+          {state.test_id && <div className="banner ok"><span>کد این آزمون: </span><code dir="ltr" style={{overflowWrap:"anywhere",userSelect:"all"}}>{state.test_id}</code><button type="button" className="btn btn-ghost btn-sm" onClick={async()=>{if(await copyText(state.test_id!))toast.success("کد آزمون کپی شد.");else toast.error("کد را دستی کپی کن.");}}>کپی کد آزمون</button></div>}
           {state.error && <div role="alert" className="banner error">{state.error}</div>}
 
           {state.mode === "sender" && (

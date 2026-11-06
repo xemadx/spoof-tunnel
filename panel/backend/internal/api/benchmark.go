@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -149,6 +150,67 @@ func benchmarkEndpoint(c db.TunnelInstance, local, peer, source, peerSource stri
 	}
 	return nil
 }
+func sameTunPrefix(a, b string) bool {
+	pa, err := netip.ParsePrefix(a)
+	if err != nil {
+		return false
+	}
+	pb, err := netip.ParsePrefix(b)
+	if err != nil {
+		return false
+	}
+	return pa.Masked() == pb.Masked()
+}
+
+// findBenchmarkPair returns the single existing TUN tunnel that is the
+// same pair as a benchmark candidate: same side (mode), same real
+// endpoints, same TUN subnet. psk, when non-empty, must also match (the
+// receiving side, where the offer carries the controller's PSK; the
+// controlling side builds a fresh PSK for a new pair, so it cannot match
+// on PSK). Zero matches means a genuinely new pair; more than one means
+// the choice is ambiguous and the caller must not guess. An unparseable
+// subnet matches nothing — the caller then surfaces its own validation
+// error for the subnet.
+func (s *Server) findBenchmarkPair(mode, localIP, peerIP, subnet, psk string) (db.TunnelInstance, bool, error) {
+	prefix, err := netip.ParsePrefix(subnet)
+	if err != nil {
+		return db.TunnelInstance{}, false, nil
+	}
+	prefix = prefix.Masked()
+	var all []db.TunnelInstance
+	if err := s.db.Where("engine = ? AND mode = ?", "tun", mode).Find(&all).Error; err != nil {
+		return db.TunnelInstance{}, false, err
+	}
+	var matches []db.TunnelInstance
+	for _, inst := range all {
+		existing, err := netip.ParsePrefix(inst.TunAddress)
+		if err != nil || existing.Masked() != prefix {
+			continue
+		}
+		if inst.LocalIP != localIP {
+			continue
+		}
+		peer := inst.RemoteAddr
+		if mode == "remote" {
+			peer = inst.ClientIP
+		}
+		if peer != peerIP {
+			continue
+		}
+		if psk != "" && inst.PSK != psk {
+			continue
+		}
+		matches = append(matches, inst)
+	}
+	if len(matches) == 0 {
+		return db.TunnelInstance{}, false, nil
+	}
+	if len(matches) > 1 {
+		return db.TunnelInstance{}, false, errors.New("benchmark_multiple_matching_connections")
+	}
+	return matches[0], true, nil
+}
+
 func (s *Server) makeBenchChange(candidate db.TunnelInstance, target uint) (*benchChange, error) {
 	change := &benchChange{s: s, after: candidate, expires: time.Now().Add(5 * time.Minute)}
 	if target != 0 {
@@ -379,6 +441,7 @@ func (s *Server) receiverBenchmarkHook(ctx context.Context, target uint, version
 				}
 			}
 			candidate := plan.candidate(inv)
+			effectiveTarget := target
 			if target != 0 {
 				var existing db.TunnelInstance
 				if e := s.db.First(&existing, target).Error; e != nil {
@@ -393,6 +456,20 @@ func (s *Server) receiverBenchmarkHook(ctx context.Context, target uint, version
 				existing.SendTransport = candidate.SendTransport
 				existing.RecvTransport = candidate.RecvTransport
 				candidate = existing
+			} else if adopted, found, adoptErr := s.findBenchmarkPair("remote", inv.B, inv.A, candidate.TunAddress, candidate.PSK); adoptErr != nil {
+				return nil, adoptErr
+			} else if found {
+				// Same pair as the offer (PSK, endpoints and TUN subnet
+				// all match): replace it instead of failing on its own
+				// subnet. No start-time version exists for an adopted
+				// target; the commit-time revision guard still applies.
+				if adopted.Mode != "remote" || adopted.PSK != candidate.PSK || !sameTunPrefix(adopted.TunAddress, candidate.TunAddress) || adopted.TunPeer != candidate.TunPeer {
+					return nil, errors.New("selected connections are not a complementary pair")
+				}
+				adopted.SendTransport = candidate.SendTransport
+				adopted.RecvTransport = candidate.RecvTransport
+				candidate = adopted
+				effectiveTarget = adopted.ID
 			} else {
 				candidate.ID = 0
 				candidate.CreatedAt = time.Time{}
@@ -405,7 +482,7 @@ func (s *Server) receiverBenchmarkHook(ctx context.Context, target uint, version
 				return nil, e
 			}
 			s.mutationMu.Lock()
-			next, e := s.makeBenchChange(candidate, target)
+			next, e := s.makeBenchChange(candidate, effectiveTarget)
 			s.mutationMu.Unlock()
 			if e != nil {
 				return nil, e
@@ -605,11 +682,32 @@ func (s *Server) handleBenchmarkPreview(c *gin.Context) {
 	s.mutationMu.Lock()
 	var local, remote db.TunnelInstance
 	var e error
-	if draft.Target == 0 {
+	// One-button apply: when no target was picked, the benchmark must
+	// still replace the live pair instead of failing on its own subnet.
+	// A candidate is the same pair when the real endpoints and the TUN
+	// subnet match; a fresh PSK/interface cannot be the match key here
+	// because a new pair gets fresh ones. An adopted target has no
+	// start-time version to compare against, so the stale-version guard
+	// only applies to an explicitly picked target (the commit-time
+	// revision guard still protects the adopted one).
+	target := draft.Target
+	if target == 0 {
+		subnet := draft.Subnet
+		if strings.TrimSpace(subnet) == "" {
+			subnet = "10.77.0.0/30"
+		}
+		adopted, found, adoptErr := s.findBenchmarkPair("local", i.A, i.B, subnet, "")
+		if adoptErr != nil {
+			e = adoptErr
+		} else if found {
+			target = adopted.ID
+		}
+	}
+	if e == nil && target == 0 {
 		local, remote, e = buildPair(pairRequest{Name: draft.Name, Engine: "tun", TunSubnet: draft.Subnet, LocalIP: i.A, RemoteIP: i.B, LocalSpoof: i.SourceA, RemoteSpoof: i.SourceB, Listen: "127.0.0.1:5000", Forward: "127.0.0.1:51820", Upload: result.Send, Download: result.Receive, LocalPort: i.PortA, RemotePort: i.PortB})
-	} else {
-		e = s.db.First(&local, draft.Target).Error
-		if e == nil && !local.UpdatedAt.Equal(s.benchVersion) {
+	} else if e == nil {
+		e = s.db.First(&local, target).Error
+		if e == nil && draft.Target != 0 && !local.UpdatedAt.Equal(s.benchVersion) {
 			e = errors.New("controller connection changed; run a fresh benchmark")
 		}
 		if e == nil {
@@ -620,10 +718,11 @@ func (s *Server) handleBenchmarkPreview(c *gin.Context) {
 		}
 	}
 	if e == nil {
-		e = s.validateBenchmarkConfig(local, draft.Target == 0)
+		e = s.validateBenchmarkConfig(local, target == 0)
 	}
 	s.mutationMu.Unlock()
 	if e != nil {
+		s.manager.RecordEvent(target, manager.LogError, "connection test preview failed: "+e.Error())
 		c.JSON(400, gin.H{"error": e.Error()})
 		return
 	}
@@ -641,12 +740,13 @@ func (s *Server) handleBenchmarkPreview(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 	if _, e = session.RemoteApply(ctx, *result, "apply_prepare", plan.offer()); e != nil {
+		s.manager.RecordEvent(target, manager.LogError, "connection test preview failed: "+e.Error())
 		c.JSON(409, gin.H{"error": e.Error()})
 		return
 	}
 	s.benchPlan = plan
 	// Deliberately omit credentials and full source inventories from preview.
-	c.JSON(200, gin.H{"token": plan.Token, "index": plan.Index, "name": local.Name, "replace": draft.Target != 0, "target_id": draft.Target, "remote_target_id": i.Target, "send": local.SendTransport, "receive": local.RecvTransport, "subnet": local.TunAddress, "expires": plan.Expires})
+	c.JSON(200, gin.H{"token": plan.Token, "index": plan.Index, "name": local.Name, "replace": target != 0, "target_id": target, "remote_target_id": i.Target, "send": local.SendTransport, "receive": local.RecvTransport, "subnet": local.TunAddress, "expires": plan.Expires})
 }
 func (s *Server) handleBenchmarkApply(c *gin.Context) {
 	var req struct {
@@ -688,6 +788,11 @@ func (s *Server) applyBenchmark(session *benchmark.Session, r benchmark.Result, 
 	token := gin.H{"token": plan.Token}
 	var failure error
 	defer func() {
+		if failure != nil {
+			s.manager.RecordEvent(plan.Local.ID, manager.LogError, "connection test apply failed: "+failure.Error())
+		} else {
+			s.manager.RecordEvent(plan.Local.ID, manager.LogInfo, fmt.Sprintf("connection test applied: %s (%s / %s)", plan.Local.Name, plan.Local.SendTransport, plan.Local.RecvTransport))
+		}
 		if failure != nil {
 			_, remoteErr := session.RemoteApply(ctx, r, "apply_rollback", token)
 			failure = errors.Join(failure, local.rollback())

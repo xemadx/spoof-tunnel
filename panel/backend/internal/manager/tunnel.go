@@ -71,6 +71,19 @@ type Instance struct {
 	wdLostSince   time.Time
 	wdLastRestart time.Time
 	wdRestarts    int
+
+	// wdPeerPrev/wdPeerPrevSet track the previous watchdog tick's peer
+	// state so the console can report the exact moment a connection is
+	// lost or restored, with the diagnostics of that moment.
+	// wdLossReported marks that a loss was already reported, so the
+	// first connection after a start is not misreported as a restore.
+	wdPeerPrev     bool
+	wdPeerPrevSet  bool
+	wdLossReported bool
+
+	// manager is the owning Manager (set by getInstance); streamLogs
+	// feeds the panel-wide console ring through it.
+	manager *Manager
 }
 
 func newInstance(id uint) *Instance {
@@ -85,6 +98,33 @@ func newInstance(id uint) *Instance {
 }
 
 // Manager manages multiple tunnel instances
+// LogLevel classifies a console event by severity.
+type LogLevel string
+
+const (
+	// LogInfo is a routine operational note.
+	LogInfo LogLevel = "info"
+	// LogWarn is a problem that deserves attention but did not stop anything.
+	LogWarn LogLevel = "warn"
+	// LogError is a failure: a rejected operation, a crashed process, a
+	// failed apply. Errors are what the Logs console is for.
+	LogError LogLevel = "error"
+)
+
+// LogEvent is one entry of the panel-wide console: every tunnel's engine
+// and supervisor lines plus panel-level observations (peer loss, apply
+// failures) in one chronological stream. The ring is in memory only and
+// starts empty on every panel start.
+type LogEvent struct {
+	Time       time.Time `json:"time"`
+	InstanceID uint      `json:"instance_id"`
+	Level      LogLevel  `json:"level"`
+	Message    string    `json:"message"`
+}
+
+// maxGlobalLogEvents bounds the console ring.
+const maxGlobalLogEvents = 2000
+
 type Manager struct {
 	recoveryDelay func(int) time.Duration // fixed at construction; tests may shorten backoff
 	// Peer-loss watchdog timing; fixed at construction, tests may shorten.
@@ -97,6 +137,12 @@ type Manager struct {
 	configDir         string
 	instances         map[uint]*Instance
 	mu                sync.RWMutex
+
+	// Panel-wide console ring, fed by every instance's log stream plus
+	// explicit panel events. Guarded by eventsMu; never held together
+	// with an Instance lock.
+	eventsMu sync.RWMutex
+	events   []LogEvent
 }
 
 // NewManager creates a new multi-instance tunnel manager
@@ -114,6 +160,60 @@ func NewManager(database *gorm.DB, binaryPath, configDir string) *Manager {
 	}
 }
 
+// RecordEvent appends one panel-level console entry. instanceID is 0
+// for events that belong to no single tunnel.
+func (m *Manager) RecordEvent(instanceID uint, level LogLevel, message string) {
+	if strings.TrimSpace(message) == "" {
+		return
+	}
+	m.eventsMu.Lock()
+	defer m.eventsMu.Unlock()
+	m.events = append(m.events, LogEvent{Time: time.Now(), InstanceID: instanceID, Level: level, Message: message})
+	if len(m.events) > maxGlobalLogEvents {
+		m.events = m.events[len(m.events)-maxGlobalLogEvents:]
+	}
+}
+
+// Events returns a copy of the newest n console entries, oldest first.
+func (m *Manager) Events(n int) []LogEvent {
+	m.eventsMu.RLock()
+	defer m.eventsMu.RUnlock()
+	if n <= 0 || n > len(m.events) {
+		n = len(m.events)
+	}
+	out := make([]LogEvent, n)
+	copy(out, m.events[len(m.events)-n:])
+	return out
+}
+
+func classifyLogLevel(line string) LogLevel {
+	lower := strings.ToLower(line)
+	switch {
+	case strings.Contains(lower, "error"), strings.Contains(lower, "failed"), strings.Contains(lower, "panic"), strings.Contains(lower, "fatal"):
+		return LogError
+	case strings.Contains(lower, "warn"), strings.Contains(lower, "lost"), strings.Contains(lower, "reject"), strings.Contains(lower, "timeout"), strings.Contains(lower, "قطع"):
+		return LogWarn
+	default:
+		return LogInfo
+	}
+}
+
+// recordLogLine feeds one engine/supervisor line into the console ring.
+// Telemetry JSON lines are not human logs and are skipped. Callers must
+// not hold an Instance lock (only eventsMu is taken here).
+func (m *Manager) recordLogLine(instanceID uint, line string) {
+	if strings.TrimSpace(line) == "" {
+		return
+	}
+	if pos := strings.Index(line, "{"); pos >= 0 {
+		var stats l3.Stats
+		if json.Unmarshal([]byte(line[pos:]), &stats) == nil && (stats.Event == "spoof_stats" || stats.Event == "emad_stats") {
+			return
+		}
+	}
+	m.RecordEvent(instanceID, classifyLogLevel(line), line)
+}
+
 // getInstance returns or creates an Instance tracker for the given ID
 func (m *Manager) getInstance(id uint) *Instance {
 	m.mu.Lock()
@@ -121,6 +221,7 @@ func (m *Manager) getInstance(id uint) *Instance {
 	inst, ok := m.instances[id]
 	if !ok {
 		inst = newInstance(id)
+		inst.manager = m
 		m.instances[id] = inst
 	}
 	return inst
@@ -252,6 +353,9 @@ func (m *Manager) startInstance(id uint) (err error) {
 	// A new process starts a fresh peer-loss observation window.
 	inst.wdPeerSeen = false
 	inst.wdLostSince = time.Time{}
+	inst.wdPeerPrev = false
+	inst.wdPeerPrevSet = false
+	inst.wdLossReported = false
 	if cfg.Engine == "tun" {
 		go m.watchdogLoop(id, done)
 	}
@@ -603,6 +707,11 @@ func streamLogs(inst *Instance, reader io.Reader, generation ...uint64) {
 		}
 		inst.subMu.Unlock()
 		inst.logMu.Unlock()
+
+		// Feed the panel-wide console ring (no Instance lock held here).
+		if inst.manager != nil {
+			inst.manager.recordLogLine(inst.ID, line)
+		}
 	}
 }
 
@@ -795,7 +904,34 @@ func (m *Manager) watchdogLoop(id uint, done chan struct{}) {
 			if !running {
 				continue
 			}
-			if !inst.watchdogTick(now, m.Telemetry(id).Peer, m.watchdogThreshold, m.watchdogCooldown) {
+			stats := m.Telemetry(id)
+			inst.mu.Lock()
+			prevSet := inst.wdPeerPrevSet
+			prev := inst.wdPeerPrev
+			lossReported := inst.wdLossReported
+			inst.wdPeerPrev = stats.Peer
+			inst.wdPeerPrevSet = true
+			inst.mu.Unlock()
+			// Report the exact moment a connection is lost or restored,
+			// with the diagnostics of that moment — this is the console
+			// entry that answers "why did it disconnect". The first
+			// connection after a start is not a restore.
+			if prevSet && prev && !stats.Peer {
+				rejected := stats.LastRejectedSource
+				if rejected == "" {
+					rejected = "none"
+				}
+				streamLogs(inst, strings.NewReader(fmt.Sprintf("[watchdog] peer connection lost (pool ready: %t, last rejected source: %s)\n", stats.PoolReady, rejected)))
+				inst.mu.Lock()
+				inst.wdLossReported = true
+				inst.mu.Unlock()
+			} else if prevSet && !prev && stats.Peer && lossReported {
+				streamLogs(inst, strings.NewReader("[watchdog] peer connection restored\n"))
+				inst.mu.Lock()
+				inst.wdLossReported = false
+				inst.mu.Unlock()
+			}
+			if !inst.watchdogTick(now, stats.Peer, m.watchdogThreshold, m.watchdogCooldown) {
 				continue
 			}
 			inst.mu.Lock()

@@ -309,6 +309,7 @@ export type BenchResult = {
   score: number;
   rate_mbps?: number;
   escalated?: boolean;
+  rounds?: number;
 };
 export type BenchState = {
   endpoints?: {
@@ -328,7 +329,6 @@ export type BenchState = {
   options: {
     rate_mbps: number;
     seconds: number;
-    max_rate_mbps?: number;
     escalate?: boolean;
   };
   results: BenchResult[];
@@ -348,6 +348,14 @@ export type BenchPreview = {
   subnet: string;
   expires: number;
 };
+export type LogEvent = {
+  time: string;
+  instance_id: number;
+  instance: string;
+  level: "info" | "warn" | "error";
+  message: string;
+};
+
 export const api = {
   benchmarkPreset: (id: number, signal?: AbortSignal) =>
     request<BenchPreset>(`/instances/${id}/benchmark-presets`, { signal }),
@@ -379,6 +387,8 @@ export const api = {
       { method: "POST", body: JSON.stringify({ token }) },
       30000,
     ),
+  logs: (limit = 500, signal?: AbortSignal) =>
+    request<{ events: LogEvent[] }>(`/logs?limit=${limit}`, { signal }),
   updateStatus: (signal?: AbortSignal) =>
     request<UpdateStatus>("/updates", { signal }),
   updateCheck: () =>

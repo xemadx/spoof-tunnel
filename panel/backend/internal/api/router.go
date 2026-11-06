@@ -108,6 +108,7 @@ func (s *Server) setupRoutes() {
 			// Dashboard
 			protected.GET("/dashboard", s.handleDashboard)
 			protected.GET("/system", s.handleSystem)
+			protected.GET("/logs", s.handleGlobalLogs)
 
 			// Tunnel Instances CRUD
 			protected.POST("/pairs", s.handlePair)
