@@ -33,6 +33,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [panelVersion, setPanelVersion] = useState("");
+  const [tlsOn, setTlsOn] = useState(false);
+  const [tlsDomain, setTlsDomain] = useState("");
   const basePath = useBasePath();
 
   useEffect(() => {
@@ -47,9 +49,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     let cancelled = false;
     api.system()
-      .then((sys: { panel_version?: string }) => {
+      .then((sys: { panel_version?: string; tls_enabled?: boolean; tls_domain?: string }) => {
         if (!cancelled && typeof sys?.panel_version === "string") {
           setPanelVersion(sys.panel_version);
+        }
+        if (!cancelled && sys?.tls_enabled) {
+          setTlsOn(true);
+          setTlsDomain(typeof sys?.tls_domain === "string" ? sys.tls_domain : "");
         }
       })
       .catch(() => {});
@@ -107,6 +113,9 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             <strong>Spoof Tunnel</strong>
             {panelVersion && (
               <span className="mono" style={{ fontSize: 11, color: "var(--accent-cyan)", opacity: 0.9 }}>{panelVersion}</span>
+            )}
+            {tlsOn && (
+              <span className="pill ok" style={{ fontSize: 11, padding: "1px 8px" }} title={tlsDomain ? `HTTPS برای ${tlsDomain}` : "HTTPS فعال"}>🔒 HTTPS</span>
             )}
           </div>
         </div>

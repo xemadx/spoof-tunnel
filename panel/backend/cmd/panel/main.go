@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"embed"
 	"flag"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/auth"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/manager"
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/tlsconf"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/updater"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -49,10 +51,38 @@ func main() {
 	setupPort := flag.Int("setup-port", 0, "setup: panel port")
 	showVersion := flag.Bool("version", false, "print panel version and exit")
 	applyUpdate := flag.Bool("apply-update", false, "apply a queued update from the independent systemd service")
+	setTLS := flag.Bool("set-tls", false, "enable TLS with --tls-domain/--tls-cert/--tls-key and exit")
+	tlsDomain := flag.String("tls-domain", "", "set-tls: fully-qualified domain the certificate covers")
+	tlsCert := flag.String("tls-cert", "", "set-tls: certificate file (full chain, e.g. /etc/letsencrypt/live/<domain>/fullchain.pem)")
+	tlsKey := flag.String("tls-key", "", "set-tls: private key file (e.g. /etc/letsencrypt/live/<domain>/privkey.pem)")
+	tlsStatusFlag := flag.Bool("tls-status", false, "print TLS status (key=value lines) and exit")
+	disableTLS := flag.Bool("disable-tls", false, "disable TLS and exit (panel serves plain HTTP on next start)")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(panelVersion)
+		return
+	}
+
+	// Determine data directory (needed by the TLS admin commands below).
+	dataDir := "/etc/spoof-panel"
+	if os.Getenv("SPOOF_DATA_DIR") != "" {
+		dataDir = os.Getenv("SPOOF_DATA_DIR")
+	}
+
+	// TLS administration: these touch only tls.json, never the database
+	// or a running panel, so they run before any init.
+	if *setTLS {
+		runSetTLS(dataDir, *tlsDomain, *tlsCert, *tlsKey)
+		return
+	}
+	if *disableTLS {
+		cfg, _ := tlsconf.Load(dataDir)
+		cfg.Enabled = false
+		if err := tlsconf.Save(dataDir, cfg); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("TLS disabled; the panel will serve plain HTTP on next start")
 		return
 	}
 
@@ -66,11 +96,8 @@ func main() {
 		}
 		return
 	}
-	// Determine data directory
-	dataDir := "/etc/spoof-panel"
-	if os.Getenv("SPOOF_DATA_DIR") != "" {
-		dataDir = os.Getenv("SPOOF_DATA_DIR")
-	}
+	// Determine data directory (already resolved above for the TLS admin
+	// commands); ensure it exists with root-only permissions.
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		log.Fatal(err)
 	}
@@ -98,6 +125,13 @@ func main() {
 	database, err := db.InitDB(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to init database: %v", err)
+	}
+
+	// TLS status report for the installer: needs the database for the
+	// panel port and web path, so it runs after init and before serving.
+	if *tlsStatusFlag {
+		printTLSStatus(database, dataDir)
+		return
 	}
 
 	auth.SetSecret(getOrCreateSetting(database, "jwt_secret", func() string { return auth.GenerateRandomString(64) }))
@@ -138,6 +172,7 @@ func main() {
 
 	// Create API server — API is prefixed with /{webpath}/api
 	srv := api.NewServer(database, mgr, "/"+webPath, panelVersion)
+	srv.SetTLSStatus(func() tlsconf.Status { return tlsconf.Evaluate(dataDir) })
 
 	// Auto-start enabled tunnels
 	var tunnels []db.TunnelInstance
@@ -298,14 +333,42 @@ func main() {
 
 	addr := net.JoinHostPort(*bind, fmt.Sprint(listenPort))
 	ip := detectServerIP()
-	fullURL := fmt.Sprintf("http://%s:%d/%s/", ip, listenPort, webPath)
+
+	// TLS: serve HTTPS when a valid certificate is configured. A
+	// configured-but-broken certificate never bricks the panel: it logs
+	// loudly and falls back to plain HTTP, and the installer can fix it
+	// by re-running. The loader re-reads the files on every handshake,
+	// so a certbot renewal takes effect with no restart.
+	scheme := "http"
+	var tlsLoader *tlsconf.Loader
+	tlsSt := tlsconf.Evaluate(dataDir)
+	if tlsSt.Enabled {
+		if tlsSt.Valid {
+			scheme = "https"
+			tlsLoader = tlsconf.NewLoader(tlsSt.CertFile, tlsSt.KeyFile)
+			if time.Until(tlsSt.Expires) < 30*24*time.Hour {
+				log.Printf("WARNING: TLS certificate for %s expires on %s; renew it (certbot renew) before then", tlsSt.Domain, tlsSt.Expires.Format("2006-01-02"))
+			}
+		} else {
+			log.Printf("WARNING: TLS is configured but the certificate is not usable (%s); serving plain HTTP", tlsSt.Error)
+		}
+	}
+
+	fullURL := fmt.Sprintf("%s://%s:%d/%s/", scheme, ip, listenPort, webPath)
 	log.Printf("╔══════════════════════════════════════════════════════════════════════╗")
 	log.Printf("║  %-68s║", "Spoof Tunnel "+panelVersion)
 	log.Printf("║  %-68s║", fullURL)
 	log.Printf("╚══════════════════════════════════════════════════════════════════════╝")
 
 	httpServer := &http.Server{Addr: addr, Handler: srv.Router(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 20}
-	if err := httpServer.ListenAndServe(); err != nil {
+	if tlsLoader != nil {
+		httpServer.TLSConfig = &tls.Config{GetCertificate: tlsLoader.GetCertificate, MinVersion: tls.VersionTLS12}
+		// Empty cert/key names: with GetCertificate set, Go serves the
+		// loader's certificate instead of loading files here.
+		if err := httpServer.ListenAndServeTLS("", ""); err != nil {
+			log.Fatalf("Server failed: %v", err)
+		}
+	} else if err := httpServer.ListenAndServe(); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
 }
@@ -440,7 +503,11 @@ func runSetup(database *gorm.DB, username, password string, port int, dataDir st
 	}
 
 	ip := detectServerIP()
-	panelURL := fmt.Sprintf("http://%s:%d/%s/", ip, port, webPath)
+	scheme := "http"
+	if st := tlsconf.Evaluate(dataDir); st.Enabled && st.Valid {
+		scheme = "https"
+	}
+	panelURL := fmt.Sprintf("%s://%s:%d/%s/", scheme, ip, port, webPath)
 
 	// Keep connection information for root, never the plaintext password.
 	credsPath := filepath.Join(dataDir, "credentials.txt")
@@ -464,4 +531,59 @@ func runSetup(database *gorm.DB, username, password string, port int, dataDir st
 	fmt.Printf("║  URL:      %-58s║\n", panelURL)
 	fmt.Println("╚══════════════════════════════════════════════════════════════════════╝")
 	fmt.Println()
+}
+
+// runSetTLS validates a certificate/key pair for one domain and enables
+// TLS for the panel. It refuses, loudly, a pair that does not load, does
+// not match, is out of date, or does not cover the domain — a bad TLS
+// configuration must fail here, at setup time, never silently at serve
+// time.
+func runSetTLS(dataDir, domain, certFile, keyFile string) {
+	domain = tlsconf.NormalizeDomain(domain)
+	if !tlsconf.ValidDomain(domain) {
+		log.Fatalf("invalid domain %q: use a fully-qualified domain name (no wildcard)", domain)
+	}
+	if certFile == "" || keyFile == "" {
+		log.Fatal("--set-tls needs --tls-cert and --tls-key")
+	}
+	expires, issuer, err := tlsconf.Validate(certFile, keyFile, domain)
+	if err != nil {
+		log.Fatalf("TLS certificate rejected: %v", err)
+	}
+	if err := tlsconf.Save(dataDir, tlsconf.Config{Enabled: true, Domain: domain, CertFile: certFile, KeyFile: keyFile}); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("TLS enabled for %s (certificate valid until %s, issuer %s)\n", domain, expires.Format(time.RFC3339), issuer)
+}
+
+// printTLSStatus reports the TLS state as key=value lines for the
+// installer: enabled/domain/cert/key/valid/error/expires plus the panel
+// port and web path, so the installer can verify the HTTPS endpoint
+// without parsing anything else.
+func printTLSStatus(database *gorm.DB, dataDir string) {
+	st := tlsconf.Evaluate(dataDir)
+	var port, prefix string
+	var s db.Setting
+	if err := database.Where("key = ?", "panel_port").First(&s).Error; err == nil {
+		port = s.Value
+	}
+	if err := database.Where("key = ?", "web_path").First(&s).Error; err == nil {
+		prefix = s.Value
+	}
+	expires := ""
+	expiresUnix := ""
+	if !st.Expires.IsZero() {
+		expires = st.Expires.Format(time.RFC3339)
+		expiresUnix = fmt.Sprint(st.Expires.Unix())
+	}
+	fmt.Printf("enabled=%t\n", st.Enabled)
+	fmt.Printf("domain=%s\n", st.Domain)
+	fmt.Printf("cert_file=%s\n", st.CertFile)
+	fmt.Printf("key_file=%s\n", st.KeyFile)
+	fmt.Printf("valid=%t\n", st.Valid)
+	fmt.Printf("error=%s\n", st.Error)
+	fmt.Printf("expires=%s\n", expires)
+	fmt.Printf("expires_unix=%s\n", expiresUnix)
+	fmt.Printf("port=%s\n", port)
+	fmt.Printf("web_path=%s\n", prefix)
 }

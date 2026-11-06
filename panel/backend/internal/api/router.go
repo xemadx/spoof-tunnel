@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/ParsaKSH/spoof-tunnel/internal/benchmark"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/tlsconf"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/updater"
 	"net/http"
 	"strings"
@@ -35,6 +36,7 @@ type Server struct {
 	router       *gin.Engine
 	webPath      string
 	version      string
+	tlsStatus    func() tlsconf.Status
 	mutationMu   *sync.Mutex
 	loginMu      sync.Mutex
 	logins       map[string][]time.Time
@@ -78,6 +80,13 @@ func NewServer(database *gorm.DB, mgr *manager.Manager, webPath string, version 
 	s.recoverBenchmarkChanges()
 	s.setupRoutes()
 	return s
+}
+
+// SetTLSStatus installs the function /api/system uses to report the TLS
+// state. It is optional: without it the endpoint reports TLS as off, so
+// existing tests that build a Server without one keep working.
+func (s *Server) SetTLSStatus(fn func() tlsconf.Status) {
+	s.tlsStatus = fn
 }
 
 // Router returns the gin router

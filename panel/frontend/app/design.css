@@ -556,9 +556,16 @@ select.input { appearance: none; cursor: pointer; }
 .ct-results progress::-webkit-progress-value{background:var(--accent-2)}
 .ct-page .field { margin-block: 16px; }
 .ct-role,.ct-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-block: 20px; }
-.ct-budget,.ct-code,.ct-detail { display: grid; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--input-bg); margin-block: 20px; }
-.ct-budget span,.ct-budget small { color: var(--text-muted); }
-.ct-budget small { line-height: 1.9; }
+/* Four-step strip: one glance at where the test is. Numbers are circles;
+   the current step is cyan, finished steps get a check. */
+.ct-steps { display: flex; flex-wrap: wrap; gap: 8px 20px; list-style: none; margin: 0; padding: 0; }
+.ct-steps li { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: .9rem; }
+.ct-steps li.current { color: var(--text); font-weight: 600; }
+.ct-steps li.done { color: var(--text-muted); }
+.ct-step-num { display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--border-strong); border-radius: 999px; font-size: .75rem; }
+.ct-steps li.current .ct-step-num { border-color: var(--accent-2); color: var(--accent-2); }
+.ct-steps li.done .ct-step-num { border-color: var(--success); color: var(--success); }
+.ct-code,.ct-detail { display: grid; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--input-bg); margin-block: 20px; }
 .ct-recommendation { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 24px; margin-block: 24px; border: 1px solid var(--accent-2); border-radius: var(--radius-lg); background: var(--card-2); }
 .ct-recommendation h3 { margin-block: 10px; font-size: 1.1rem; }
 .ct-recommendation .btn { flex-shrink: 0; }

@@ -158,6 +158,20 @@ func (s *Server) handleSystem(c *gin.Context) {
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 
+	// TLS state for the Settings page: whether the panel serves HTTPS,
+	// for which domain, and when the certificate expires (unix seconds,
+	// 0 when none). Unset when no status function was installed.
+	tlsEnabled := false
+	tlsDomain := ""
+	var tlsExpires int64
+	if s.tlsStatus != nil {
+		if st := s.tlsStatus(); st.Enabled && st.Valid {
+			tlsEnabled = true
+			tlsDomain = st.Domain
+			tlsExpires = st.Expires.Unix()
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"hostname":      hostname,
 		"os":            runtime.GOOS,
@@ -167,6 +181,9 @@ func (s *Server) handleSystem(c *gin.Context) {
 		"memory_mb":     m.Alloc / 1024 / 1024,
 		"go_version":    runtime.Version(),
 		"panel_version": s.version,
+		"tls_enabled":   tlsEnabled,
+		"tls_domain":    tlsDomain,
+		"tls_expires":   tlsExpires,
 	})
 }
 

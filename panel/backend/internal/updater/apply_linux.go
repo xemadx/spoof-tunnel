@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"database/sql"
 	"debug/elf"
 	"encoding/hex"
@@ -24,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/tlsconf"
 	_ "github.com/glebarez/go-sqlite"
 )
 
@@ -332,9 +334,30 @@ func (u *Updater) panelHealthURL() (string, error) {
 		if e != nil || n < 1 || n > 65535 || prefix == "" || strings.ContainsAny(prefix, "/?#\\\r\n") {
 			return "", fmt.Errorf("invalid_panel_endpoint")
 		}
-		return "http://127.0.0.1:" + strconv.Itoa(n) + "/" + prefix + "/api/health", nil
+		return healthURLFor(n, prefix, tlsEnabled(u.dataDir)), nil
 	}
 	return "", fmt.Errorf("invalid_panel_endpoint")
+}
+
+// tlsEnabled reports whether the panel currently serves HTTPS: TLS is
+// configured and the certificate on disk is valid. A configured-but-broken
+// certificate falls back to plain HTTP at serve time, so the health check
+// must use plain HTTP for it too.
+func tlsEnabled(dataDir string) bool {
+	st := tlsconf.Evaluate(dataDir)
+	return st.Enabled && st.Valid
+}
+
+// healthURLFor builds the loopback health URL for a panel port, prefix and
+// TLS state. The host is always 127.0.0.1: the check is liveness plus the
+// version string, and the certificate is issued for the panel's domain,
+// never for loopback, so the client skips verification for https URLs.
+func healthURLFor(port int, prefix string, tlsOn bool) string {
+	scheme := "http"
+	if tlsOn {
+		scheme = "https"
+	}
+	return scheme + "://127.0.0.1:" + strconv.Itoa(port) + "/" + prefix + "/api/health"
 }
 
 func (u *Updater) download(ctx context.Context, url, dest string, limit int64, progress ...func(int64) error) error {
@@ -547,12 +570,21 @@ func backupDatabase(source, dest string) (string, error) {
 	if e != nil || n < 1 || n > 65535 || prefix == "" || strings.ContainsAny(prefix, "/?#\\\r\n") {
 		return "", fmt.Errorf("invalid_panel_endpoint")
 	}
-	return "http://127.0.0.1:" + strconv.Itoa(n) + "/" + prefix + "/api/health", nil
+	// source is <dataDir>/panel.db, so the TLS config lives next to it.
+	return healthURLFor(n, prefix, tlsEnabled(filepath.Dir(source))), nil
 }
 func (u *Updater) waitHealth(ctx context.Context, url, version string) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
+	// The health check runs against 127.0.0.1, but the certificate is
+	// issued for the panel's domain, so hostname verification can never
+	// pass on loopback. Skipping verification here is safe: the check
+	// only establishes that the just-installed panel answers with the
+	// expected version on this machine.
 	client := &http.Client{Timeout: 2 * time.Second}
+	if strings.HasPrefix(url, "https://") {
+		client.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} //nolint:gosec
+	}
 	for {
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 		if err != nil {

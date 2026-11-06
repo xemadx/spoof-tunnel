@@ -1,11 +1,58 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, setToken } from "@/lib/api";
 import { PanelUpdate } from "@/lib/panel-update";
 import { useToast } from "@/lib/toast";
 
 const MIN = 12;
 const MAX = 72;
+
+// TLS status card: read-only. Certificates are issued by the installer
+// (certbot + --set-tls), never from the browser; the panel only reports
+// what it serves, including the expiry the operator must act on.
+function TlsCard() {
+  const [tls, setTls] = useState<{ enabled: boolean; domain: string; expires: number; daysLeft: number } | null>(null);
+  useEffect(() => {
+    api.system()
+      .then((sys: { tls_enabled?: boolean; tls_domain?: string; tls_expires?: number }) => {
+        const expires = typeof sys?.tls_expires === "number" ? sys.tls_expires : 0;
+        setTls({
+          enabled: !!sys?.tls_enabled,
+          domain: typeof sys?.tls_domain === "string" ? sys.tls_domain : "",
+          expires,
+          daysLeft: expires > 0 ? Math.floor((expires * 1000 - Date.now()) / 86400000) : -1,
+        });
+      })
+      .catch(() => {});
+  }, []);
+  if (!tls) return null;
+  const daysLeft = tls.daysLeft;
+  const expiringSoon = tls.enabled && daysLeft >= 0 && daysLeft < 30;
+  return (
+    <section className="panel" aria-label="وضعیت سرتیفیکیت">
+      <div className="section-head">
+        <h2>سرتیفیکیت (TLS)</h2>
+        {tls.enabled ? <span className="pill ok">HTTPS فعال 🔒</span> : <span className="pill muted">بدون سرتیفیکیت — HTTP</span>}
+      </div>
+      {tls.enabled ? (
+        <>
+          <dl className="host-info" style={{ marginTop: 8 }}>
+            <dt>دامنه</dt><dd className="mono" dir="ltr">{tls.domain || "—"}</dd>
+            <dt>انقضا</dt><dd>{tls.expires > 0 ? new Date(tls.expires * 1000).toLocaleDateString("fa-IR") : "—"}{daysLeft >= 0 ? ` (${daysLeft.toLocaleString("fa-IR")} روز مانده)` : ""}</dd>
+          </dl>
+          {expiringSoon && (
+            <div role="alert" className="banner warn">
+              سرتیفیکیت تا {daysLeft.toLocaleString("fa-IR")} روز دیگر منقضی می‌شود. با دستور <code dir="ltr">certbot renew</code> تمدیدش کن یا اسکریپت نصب را دوباره اجرا کن؛ تمدید بدون ری‌استارت پنل اعمال می‌شود.
+            </div>
+          )}
+          <p className="hint">سرتیفیکیت با Let&rsquo;s Encrypt گرفته شده و تمدیدش خودکار است؛ پنل سرتیفیکیت تازه را بدون ری‌استارت می‌خواند.</p>
+        </>
+      ) : (
+        <p className="hint">پنل الان روی HTTP ساده سرو می‌شود. برای گرفتن سرتیفیکیت رایگان، اسکریپت نصب را دوباره اجرا کن؛ بعد از تأیید رمز، ازت می‌پرسه سرتیفیکیت بگیره یا نه.</p>
+      )}
+    </section>
+  );
+}
 
 export default function SettingsPage() {
   const [updating,setUpdating] = useState(false);
@@ -68,6 +115,7 @@ export default function SettingsPage() {
       </div>
 
       <PanelUpdate onBusy={setUpdating} />
+      <TlsCard />
       <section className="panel">
         <div className="section-head">
           <h2>تغییر رمز عبور مدیر</h2>

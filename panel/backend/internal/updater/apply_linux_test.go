@@ -23,6 +23,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -311,5 +312,75 @@ func TestBackupIncludesCommittedWALAndPreservesPrivateMode(t *testing.T) {
 	var secret string
 	if err = snapshot.QueryRow("SELECT value FROM settings WHERE key='jwt_secret'").Scan(&secret); err != nil || secret != "committed-wal-secret" {
 		t.Fatal("backup omitted committed WAL contents", secret, err)
+	}
+}
+
+func TestHealthURLFor(t *testing.T) {
+	if got := healthURLFor(18443, "abc123", false); got != "http://127.0.0.1:18443/abc123/api/health" {
+		t.Errorf("http health URL = %q", got)
+	}
+	if got := healthURLFor(18443, "abc123", true); got != "https://127.0.0.1:18443/abc123/api/health" {
+		t.Errorf("https health URL = %q", got)
+	}
+}
+
+func TestWaitHealthHTTPS(t *testing.T) {
+	// A TLS server with a self-signed certificate: the loopback health
+	// client must skip verification (the real certificate is for the
+	// panel domain, never for 127.0.0.1) and still accept the version.
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"version":"v9.9.9"}`)
+	}))
+	defer tlsServer.Close()
+	if err := New("v0.4.1", t.TempDir()).waitHealth(context.Background(), tlsServer.URL, "v9.9.9"); err != nil {
+		t.Fatalf("waitHealth over self-signed TLS: %v", err)
+	}
+	// A wrong version must fail; a short caller context keeps this
+	// failure fast instead of waiting out the 45 s poll window.
+	short, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := New("v0.4.1", t.TempDir()).waitHealth(short, tlsServer.URL, "v0.0.0"); err == nil {
+		t.Error("waitHealth accepted a wrong version")
+	}
+}
+
+func writeMinimalPanelDB(t *testing.T, dir, port, prefix string) {
+	t.Helper()
+	database, err := sql.Open("sqlite", filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("INSERT INTO settings (key, value) VALUES ('panel_port', ?), ('web_path', ?)", port, prefix); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPanelHealthURLFallsBackToHTTPWithoutValidTLS(t *testing.T) {
+	dir := t.TempDir()
+	writeMinimalPanelDB(t, dir, "18443", "abc123")
+	u := New("v0.4.1", dir)
+	url, err := u.panelHealthURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "http://127.0.0.1:18443/abc123/api/health" {
+		t.Errorf("health URL without TLS = %q", url)
+	}
+	// TLS configured but pointing at missing files must fall back to
+	// plain HTTP, exactly like the serve path does.
+	if err := os.WriteFile(filepath.Join(dir, "tls.json"), []byte(`{"enabled":true,"domain":"panel.example.com","cert_file":"/nonexistent/fullchain.pem","key_file":"/nonexistent/privkey.pem"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	url, err = u.panelHealthURL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if url != "http://127.0.0.1:18443/abc123/api/health" {
+		t.Errorf("health URL with broken TLS = %q, want plain HTTP fallback", url)
 	}
 }

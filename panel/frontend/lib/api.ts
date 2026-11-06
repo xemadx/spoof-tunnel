@@ -100,6 +100,9 @@ type System = {
   memory_mb: number;
   go_version: string;
   panel_version: string;
+  tls_enabled?: boolean;
+  tls_domain?: string;
+  tls_expires?: number;
 };
 type Dashboard = {
   total: number;

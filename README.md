@@ -46,10 +46,10 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.4.6**:
+To explicitly install **v0.4.7**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.4.6/install.sh | SPOOF_RELEASE=v0.4.6 bash
+curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.4.7/install.sh | SPOOF_RELEASE=v0.4.7 bash
 ```
 
 Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS` and a signed `SHA256SUMS.sig`. No Go, Node.js or Rust toolchain is needed on the VPS.
@@ -137,7 +137,7 @@ Rotating local spoof sources require the **same selected set in the other end's 
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.4.6 bash scripts/build.sh
+SPOOF_VERSION=v0.4.7 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
@@ -168,7 +168,7 @@ The receiver acknowledges startup only after its raw socket is ready. ICMP retai
 
 Forwarders wait up to five seconds for their assigned TUN to be up, and Stop cancels that wait. There is still no fallback route. Running tunnel edits are rejected with HTTP 409; saving a stopped/error tunnel cancels queued recovery and requires explicit Start. A mismatched PSK/allowlist normally leaves a live core without a working peer; restarting cannot repair it.
 
-The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.4.6` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
+The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.4.7` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
 
 
 ### v0.3.10 connection labels
@@ -186,6 +186,12 @@ Named TXT files, selected-set deduplication, quality-based dispatch, healthy-sou
 Clearing the manual default and selecting a TXT group now commit together, including pending policy changes. Either save control uses the same atomic transaction; a rejected request leaves the previous configuration intact. Source-quality rows explain timeouts, missing reverse-path evidence and restart quarantine. Live pool summaries are readable in Persian, and log history switches atomically to a bounded, batched live stream.
 
 Settings now checks GitHub Releases and installs a newer stable panel/core pair with progress, actual downloaded bytes, mandatory checksums, a consistent SQLite backup and rollback on startup failure. The page reloads once after the new version responds; the header reads the new running version. **Upgrade to v0.4.1 once with the installer to install the independent update service.** Future updates can then be started from Settings. [Update operation and limits](docs/UPDATING.md).
+
+### v0.4.7: free TLS certificates for the panel, minimal connection-test page
+
+The installer can now get a free Let's Encrypt certificate for the panel. After the password is confirmed, if no valid certificate is configured it asks whether to get one, asks for the domain, and obtains it with certbot (HTTP-01 on port 80) after pre-checking that the domain resolves to this server's public IP and that port 80 is free; it then validates the pair, restarts the panel, and verifies the live HTTPS endpoint. Any failure leaves the panel on plain HTTP. On later runs a server that already has a certificate is never asked again; a certificate expiring within 30 days is renewed, and the panel picks up renewed files without a restart. Each server needs its own domain. The Settings page shows the certificate state and expiry, and the header shows a lock pill when HTTPS is on. [TLS operation](docs/TLS.md).
+
+The connection-test page was redesigned to be minimal: a four-step strip (setup · measuring · recommendation · applying) shows where the test is at a glance, and the long explanatory paragraphs are gone — one short line per section, the data estimate in a single line, and the recommendation card reduced to the best pair, the weaker-direction speed, the median RTT, the cap warning when it applies, and one line about what applying does. Nothing was removed functionally: the same setup, the same 25-cell matrix, the same detail view, the same preview-and-apply flow, and the same Persian error explanations with a link to the Logs console.
 
 ### v0.4.6: no speed cap on the connection test, copy works on plain HTTP, one-button apply, Logs console
 

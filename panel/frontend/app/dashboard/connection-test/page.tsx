@@ -111,6 +111,16 @@ export default function ConnectionTestPage() {
   const active =
     !!state && ["waiting", "running", "applying"].includes(state.status);
   const locked = active || (state?.status === "done" && !state.applied);
+  // Which of the four steps the page is on: 1 setup, 2 measuring,
+  // 3 recommendation, 4 applying. One glance, no paragraphs.
+  const step =
+    !state || state.status === "idle" || state.status === "stopped"
+      ? 1
+      : state.status === "waiting" || state.status === "running"
+        ? 2
+        : state.status === "done"
+          ? 3
+          : 4;
   // Worst-case ladder cost: every cell climbs every rung to the 500 Mbps
   // measurement ceiling. In practice the ladder stops as soon as the link
   // saturates, so real usage is far below this.
@@ -276,13 +286,28 @@ export default function ConnectionTestPage() {
     <div className="ct-page">
       <div className="page-header">
         <div>
-          <p className="eyebrow">CONNECTION LAB / 25</p>
           <h1>آزمون اتصال</h1>
           <p className="page-subtitle">
-            حامل مناسب را با اندازه‌گیری واقعیِ هر دو جهت انتخاب کن.
+            ۲۵ ترکیب حامل را در هر دو جهت می‌سنجد و بهترین را پیشنهاد می‌دهد.
           </p>
         </div>
       </div>
+      <ol className="ct-steps" aria-label="مراحل آزمون">
+        {["آماده‌سازی", "سنجش", "پیشنهاد", "اعمال"].map((label, i) => (
+          <li
+            key={label}
+            className={
+              i + 1 === step ? "current" : i + 1 < step ? "done" : ""
+            }
+            aria-current={i + 1 === step ? "step" : undefined}
+          >
+            <span className="ct-step-num">
+              {i + 1 < step ? "✓" : number(i + 1, 0)}
+            </span>
+            {label}
+          </li>
+        ))}
+      </ol>
       {error && (
         <div className="alert alert-error" role="alert">
           {error}
@@ -299,10 +324,11 @@ export default function ConnectionTestPage() {
       <section className="panel">
         <div className="section-head">
           <div>
-            <h2>دو سرور، یک آزمون مشترک</h2>
+            <h2>آماده‌سازی</h2>
             <p className="hint">
-              آزمون اسپوف، عبور یک مبدأ را می‌سنجد؛ این بخش کیفیت ۲۵ ترکیب حامل
-              را با دو مبدأ ثابت مقایسه می‌کند.
+              {role === "local"
+                ? "کد ساخته‌شده در پنل طرف مقابل را وارد کن."
+                : "کد را بساز و به سرور کنترل‌کننده بده."}
             </p>
           </div>
         </div>
@@ -341,11 +367,6 @@ export default function ConnectionTestPage() {
               طرف مقابل · معمولاً خارج
             </button>
           </div>
-          <p className="hint">
-            ابتدا در پنل طرف مقابل کد بساز؛ سپس آن را در سرور کنترل‌کننده وارد
-            کن. هر دو پنل باید این قابلیت را داشته باشند. برای آزمون، اتصال TUN
-            قبلی لازم نیست.
-          </p>
           <label className="field">
             <span>اتصال مقصد برای اعمال نتیجه</span>
             <select
@@ -363,10 +384,6 @@ export default function ConnectionTestPage() {
                   </option>
                 ))}
             </select>
-            <small className="hint">
-              برای تغییر اتصال موجود، نیمهٔ همان اتصال را در هر دو پنل انتخاب
-              کن. آزمون، اتصال فعلی را متوقف نمی‌کند.
-            </small>
           </label>
           {presetLoading && (
             <p className="hint" role="status">
@@ -384,19 +401,6 @@ export default function ConnectionTestPage() {
                 دریافت دوبارهٔ مشخصات اتصال
               </button>
             </div>
-          )}
-          {preset && (
-            <p className="hint">
-              آی‌پی‌های واقعی و پورت‌ها از همین اتصال دریافت شدند.{" "}
-              {preset.source_verified
-                ? "مبدأ پیشنهادی همین سرور از منتخب‌های تأییدشده است."
-                : "مبدأ پیشنهادی از استخر اعمال‌شده است؛ کیفیت آن در آزمون سنجیده می‌شود."}{" "}
-              {preset.peer_learned
-                ? "فهرست مجاز طرف مقابل از موتور فعال خوانده شد."
-                : "مبدأ طرف مقابل از فهرست مجاز ذخیره‌شده است."}{" "}
-              می‌توانی مبدأهای ثابت را با آی‌پی مجاز دیگری عوض کنی؛ استخر حین
-              آزمون نمی‌چرخد.
-            </p>
           )}
           {role === "remote" ? (
             <>
@@ -633,29 +637,20 @@ export default function ConnectionTestPage() {
                   شود؛ سقف انتخابی ندارد
                 </span>
               </label>
-              <div className="ct-budget">
-                <strong>۲۵ ترکیب · دو جهت جداگانه</strong>
-                <span>
-                  تا حدود{" "}
-                  {number(
-                    ((escalate
-                      ? ladderRungs.reduce((a, b) => a + b, 0)
-                      : rate) *
-                      seconds *
-                      25 *
-                      2) /
-                      8,
-                    0,
-                  )}{" "}
-                  MB دادهٔ آزمون، به‌علاوهٔ سربار شبکه
-                </span>
-                <small>
-                  برای هر ترکیب ۱۲ نمونهٔ رفت‌وبرگشت ثبت می‌شود. اگر جهتی به
-                  نرخ پایه برسد، همان ترکیب با نرخ دوبرابر دوباره سنجیده
-                  می‌شود تا جایی که لینک اشباع شود؛ فقط ترکیب‌های موفق دوباره
-                  سنجیده می‌شوند و حداکثر اندازه‌گیری ۵۰۰ مگابیت بر ثانیه است.
-                </small>
-              </div>
+              <p className="hint">
+                ۲۵ ترکیب · تا حدود{" "}
+                {number(
+                  ((escalate
+                    ? ladderRungs.reduce((a, b) => a + b, 0)
+                    : rate) *
+                    seconds *
+                    25 *
+                    2) /
+                    8,
+                  0,
+                )}{" "}
+                MB دادهٔ آزمون
+              </p>
               <div className="ct-actions">
                 <button
                   className="btn btn-primary"
@@ -722,10 +717,8 @@ export default function ConnectionTestPage() {
           />
           {state.status === "applying" && (
             <p className="pool-note" role="status">
-              تونل جدید در دو سرور راه‌اندازی می‌شود و پاسخ احرازشده و تأیید
-              استخر مبدأها بررسی می‌شود؛ این مرحله تا حدود ۱۰۰ ثانیه طول
-              می‌کشد. اگر در این مدت همتا تأیید نشود، تنظیمات قبلی خودکار
-              بازیابی می‌شود.
+              تونل جدید در دو سرور راه‌اندازی می‌شود؛ تا حدود ۱۰۰ ثانیه طول
+              می‌کشد. اگر همتا تأیید نشود، تنظیمات قبلی بازیابی می‌شود.
             </p>
           )}
           {state.endpoints && (
@@ -755,9 +748,7 @@ export default function ConnectionTestPage() {
                 </div>
               </div>
               <p className="hint">
-                نتیجه به همین مبدأها و شرایط این زمان مربوط است. در اتصال موجود،
-                فایل‌ها و سیاست استخر حفظ می‌شوند؛ کیفیت مبدأهای دیگر ممکن است
-                متفاوت باشد.
+                نتیجه به همین مبدأها و شرایط این زمان مربوط است.
               </p>
             </details>
           )}
@@ -771,9 +762,7 @@ export default function ConnectionTestPage() {
           {best && (
             <div className="ct-recommendation">
               <div>
-                <span className="eyebrow">
-                  پیشنهاد بر اساس اندازه‌گیری همین آزمون
-                </span>
+                <span className="eyebrow">پیشنهاد آزمون</span>
                 <h3>
                   ارسال این سرور: {LABEL[best.send]} · ارسال طرف مقابل:{" "}
                   {LABEL[best.receive]}
@@ -781,11 +770,6 @@ export default function ConnectionTestPage() {
                 <p>
                   حداقل سرعت دو جهت {number(speed(best))} Mbps · تأخیر میانه{" "}
                   {number(best.rtt_ms)} ms
-                </p>
-                <p className="hint">
-                  امتیاز، سرعتِ جهت ضعیف‌تر را با افت داده، پاسخ‌های پینگ و
-                  تأخیر صدک ۹۵ تعدیل می‌کند. کیفیت شبکه و مبدأها ممکن است بعداً
-                  تغییر کند.
                 </p>
                 {(best.upload.capped || best.download.capped) && (
                   <p className="ct-ceiling">
@@ -795,18 +779,10 @@ export default function ConnectionTestPage() {
                     یک تنظیم.
                   </p>
                 )}
-                {best.escalated &&
-                  !best.upload.capped &&
-                  !best.download.capped && (
-                    <p className="hint">
-                      این ترکیب پس از رسیدن به نرخ پایه، با دوبرابر کردن نرخ
-                      دوباره سنجیده شد و سرعت واقعی آن معلوم است.
-                    </p>
-                  )}
                 <p className="hint">
                   {target
-                    ? `روی اتصال «${instances.find((i) => i.id === target)?.name ?? `#${target}`}» اعمال می‌شود؛ اتصال فعلی در هر دو سرور جایگزین و راه‌اندازی می‌شود.`
-                    : "اتصال مقصد انتخاب نشده؛ آزمون اتصالِ هم‌سان با همین آی‌پی‌ها و زیرشبکه را پیدا و جایگزین می‌کند، وگرنه اتصال جدید می‌سازد؛ در هر دو حالت هر دو سرور راه‌اندازی می‌شوند."}
+                    ? `روی اتصال «${instances.find((i) => i.id === target)?.name ?? `#${target}`}» اعمال می‌شود.`
+                    : "اتصال هم‌سان جایگزین می‌شود، وگرنه اتصال جدید ساخته می‌شود."}
                 </p>
               </div>
               {role === "local" &&
@@ -826,9 +802,8 @@ export default function ConnectionTestPage() {
           )}
           {state.status === "done" && !best && (
             <p className="pool-note">
-              هیچ ترکیبی شرایط پیشنهاد را نداشت. فقط مشاهدهٔ ارسال، اتصال را
-              اثبات نمی‌کند؛ مبدأها، مسیر برگشت، ساعت دو سرور و فایروال‌ها را
-              بررسی کن.
+              هیچ ترکیبی شرایط پیشنهاد را نداشت. مبدأها و مسیر برگشت را بررسی
+              کن.
             </p>
           )}
           <div className="pool-table-wrap">
@@ -1014,9 +989,7 @@ export default function ConnectionTestPage() {
               </div>
             </dl>
             <p className="hint">
-              تنظیمات و تداخل‌ها در هر دو سمت بررسی شده‌اند. پس از راه‌اندازی،
-              پاسخ احرازشده بررسی می‌شود؛ در صورت شکست، تلاش برای بازیابی
-              تنظیمات قبلی انجام می‌شود.
+              در صورت شکست، تنظیمات قبلی بازیابی می‌شود.
             </p>
             <div className="ct-actions">
               <button
