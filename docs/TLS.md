@@ -12,7 +12,7 @@
 نمی‌خوای بگیری؟». اگر بگویی بله، دامنه را می‌پرسد (تا سه بار؛ دامنه باید کامل
 باشد، مثل `panel.example.com`؛ وایلدکارد قبول نمی‌شود چون HTTP-01 نمی‌تواند
 آن را اثبات کند). بعد، پیش از certbot، سه چیز را بررسی می‌کند: دامنه به آی‌پی‌ای
-حل شود، آن آی‌پی با آی‌پی عمومی همین سرور برابر باشد، و پورت ۸۰ خالی باشد.
+حل شود، آن آی‌پی یکی از آی‌پی‌های همین سرور باشد، و پورت ۸۰ خالی باشد.
 اگر چیزی درست نباشد، دقیق می‌گوید چه را درست کن و روی HTTP می‌ماند. certbot
 (اگر نصب نباشد، با apt/dnf/yum نصب می‌شود) سرتیفیکیت را با چالش HTTP-01 روی
 پورت ۸۰ می‌گیرد؛ پنل با `--set-tls` آن را بررسی می‌کند (جفت کلید با هم بخوانند،
@@ -21,6 +21,8 @@
 اگر هر مرحله‌ای شکست بخورد، پنل روی HTTP می‌ماند و چیزی نیمه‌کاره رها
 نمی‌شود. در اجرای بعدی نصب‌کننده، اگر سرتیفیکیت داشته باشد، دیگر سؤال
 نمی‌پرسد؛ فقط یک خط وضعیت نشان می‌دهد.
+
+**اگر سرور پشت NAT است:** آی‌پی‌ای که سرویس‌های بیرونی مثل ipify می‌بینند فقط آی‌پی خروجی سرور است و ممکن است با آی‌پی ورودی (آی‌پی‌ای که دامنه باید به آن اشاره کند) فرق کند. نصب‌کننده به همین دلیل اول آی‌پی‌های روی اینترفیس‌های سرور و آی‌پی آدرس پنل را بررسی می‌کند و فقط در آخر سراغ آی‌پی خروجی می‌رود؛ اگر دامنه با هیچ‌کدام نخواند، می‌پرسد با این حال ادامه دهد. اگر آدرس چاپ‌شدهٔ پنل هم آی‌پی خروجی نادرست را نشان می‌دهد، پیش از نصب `SPOOF_PUBLIC_IP=<آی‌پی ورودی سرور>` را تنظیم کن.
 
 **تمدید:** certbot تمدید را خودش انجام می‌دهد (`certbot renew`) و پنل
 سرتیفیکیت تازه را بدون راه‌اندازی مجدد می‌خواند (بارگذاری پویا در هر
@@ -54,9 +56,13 @@ password is confirmed, if no valid certificate is configured, the installer
 asks whether to get a free one. On yes it asks for the domain (up to three
 tries; it must be a fully-qualified name such as `panel.example.com`;
 wildcards are rejected because HTTP-01 cannot prove one). Before certbot it
-pre-checks three things: the domain resolves, it resolves to this server's
-public IP, and port 80 is free. If anything is wrong it says exactly what to
-fix and stays on HTTP. certbot (installed via apt/dnf/yum when missing)
+pre-checks three things: the domain resolves, it resolves to one of this server's
+addresses (interface addresses, the panel URL's IP, or the outbound address),
+and port 80 is free. If the domain matches none of them, the installer shows
+every address it found and asks whether to continue anyway and let certbot
+decide; if the domain really points elsewhere, certbot fails and the panel
+stays on HTTP. If anything is wrong it says exactly what to fix and stays on
+HTTP. certbot (installed via apt/dnf/yum when missing)
 obtains the certificate with the HTTP-01 challenge on port 80; the panel
 validates it with `--set-tls` (pair loads, key matches, in date, SAN covers
 the domain), restarts the service, and verifies the live endpoint with `curl`
@@ -64,6 +70,14 @@ against `https://<domain>:<port>/<prefix>/api/health`. Any failure leaves the
 panel on HTTP; nothing is left half configured. On later installer runs, a
 server that already has a certificate is never asked again — only one status
 line is shown.
+
+**Behind NAT:** the address outside services like ipify see is only the
+server's egress address, and it can differ from the inbound address (the one
+the domain must point at). The installer therefore checks the interface
+addresses and the panel URL's IP first and only falls back to the egress
+address; the panel binary does the same when printing its URL. If the printed
+panel URL shows the wrong egress address, set
+`SPOOF_PUBLIC_IP=<the server's inbound IP>` before running the installer.
 
 **Renewal:** certbot renews (`certbot renew`) and the panel picks up renewed
 files without a restart (dynamic reload on every handshake). If the

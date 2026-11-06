@@ -374,9 +374,17 @@ func main() {
 }
 
 // detectServerIP attempts to determine the external public IPv4 of this host.
+// An address assigned to an interface is the inbound IP and wins: an
+// outbound lookup only sees the egress address, which differs behind NAT
+// (a panel URL built on it does not answer). SPOOF_PUBLIC_IP overrides
+// everything for hosts whose inbound IP is not visible locally.
 func detectServerIP() string {
 	if value := os.Getenv("SPOOF_PUBLIC_IP"); net.ParseIP(value).To4() != nil {
 		return value
+	}
+	addrs, _ := net.InterfaceAddrs()
+	if ip := firstGlobalUnicastIPv4(addrs); ip != "" {
+		return ip
 	}
 	endpoints := []string{
 		"https://api.ipify.org",
@@ -395,15 +403,53 @@ func detectServerIP() string {
 			}
 		}
 	}
-	addrs, err := net.InterfaceAddrs()
-	if err == nil {
-		for _, addr := range addrs {
-			if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
-				return ipnet.IP.String()
-			}
+	for _, addr := range addrs {
+		if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
+			return ipnet.IP.String()
 		}
 	}
 	return "YOUR_IP"
+}
+
+// firstGlobalUnicastIPv4 returns the first globally routable IPv4 among
+// the host's interface addresses, or "" when there is none.
+func firstGlobalUnicastIPv4(addrs []net.Addr) string {
+	for _, addr := range addrs {
+		ipnet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if ip := ipnet.IP; isPublicIPv4(ip) {
+			return ip.To4().String()
+		}
+	}
+	return ""
+}
+
+// isPublicIPv4 reports whether ip is a globally routable IPv4 address:
+// not loopback, link-local, multicast, unspecified, RFC 1918, or CGNAT
+// (RFC 6598, 100.64.0.0/10).
+func isPublicIPv4(ip net.IP) bool {
+	v := ip.To4()
+	if v == nil {
+		return false
+	}
+	if v[0] == 10 || v[0] == 127 || v[0] == 0 {
+		return false
+	}
+	if v[0] == 172 && v[1] >= 16 && v[1] <= 31 {
+		return false
+	}
+	if v[0] == 192 && v[1] == 168 {
+		return false
+	}
+	if v[0] == 100 && v[1] >= 64 && v[1] <= 127 {
+		return false
+	}
+	if v[0] == 169 && v[1] == 254 {
+		return false
+	}
+	return true
 }
 
 // getOrCreateSetting reads a setting from DB, or creates it with a default value.

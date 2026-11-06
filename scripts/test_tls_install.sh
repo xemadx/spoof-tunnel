@@ -58,7 +58,7 @@ SHIM
 #!/usr/bin/env bash
 for a in "$@"; do
   case "$a" in
-    *api.ipify.org*|*ifconfig.me*) printf '%s' "$FAKE_IP"; exit 0 ;;
+    *api.ipify.org*|*ifconfig.me*) printf '%s' "${MOCK_EGRESS_IP:-$FAKE_IP}"; exit 0 ;;
   esac
 done
 if [[ "$*" == *--resolve* ]]; then
@@ -71,7 +71,15 @@ SHIM
   cat > "$bin/getent" <<'SHIM'
 #!/usr/bin/env bash
 if [[ "${MOCK_DNS:-ok}" == fail ]]; then exit 2; fi
-printf '%s %s\n' "$FAKE_IP" "$2"
+printf '%s %s\n' "${MOCK_DNS_IP:-$FAKE_IP}" "$2"
+SHIM
+  cat > "$bin/hostname" <<'SHIM'
+#!/usr/bin/env bash
+if [[ "$1" == "-I" ]]; then
+  printf '%s\n' "${MOCK_IFACE_IP:-203.0.113.20}"
+  exit 0
+fi
+exit 0
 SHIM
   cat > "$bin/python3" <<'SHIM'
 #!/usr/bin/env bash
@@ -79,7 +87,7 @@ SHIM
 # the real interpreter.
 if [[ "$*" == *gethostbyname* ]]; then
   if [[ "${MOCK_DNS:-ok}" == fail ]]; then exit 1; fi
-  printf '%s' "$FAKE_IP"
+  printf '%s' "${MOCK_DNS_IP:-$FAKE_IP}"
   exit 0
 fi
 exec /usr/bin/python3 "$@"
@@ -313,6 +321,53 @@ check_scenario_10() {
   check "scenario 10: state disabled again" contains "$dir/out.txt" "enabled=0"
   check "scenario 10: SPOOF_TLS_ON=0" contains "$dir/out.txt" "SPOOF_TLS_ON=0"
 }
+# The live case: DNS points at the server's inbound IP, the egress IP
+# differs (NAT). The pre-check must pass on the interface candidate.
+scenario_11_setup() {
+  printf 'y\n%s\n' "$DOMAIN" > "$1/answers"
+  printf 'MOCK_DNS_IP=203.0.113.10\nMOCK_IFACE_IP=203.0.113.10\nMOCK_EGRESS_IP=203.0.113.99\n' > "$1/env"
+}
+check_scenario_11() {
+  local dir="$1" log="$2"
+  check "scenario 11: no continue prompt when an interface IP matches" not_contains "$dir/pty.txt" "Continue anyway"
+  check "scenario 11: certbot called" contains "$log" "certbot certonly"
+  check "scenario 11: HTTPS enabled" contains "$dir/out.txt" "✓ HTTPS enabled"
+}
+# DNS matches none of the server's addresses; answering y lets certbot
+# decide, answering n keeps HTTP.
+scenario_12_setup() {
+  printf 'y\n%s\ny\n' "$DOMAIN" > "$1/answers"
+  printf 'MOCK_DNS_IP=203.0.113.10\nMOCK_IFACE_IP=203.0.113.20\nMOCK_EGRESS_IP=203.0.113.99\n' > "$1/env"
+}
+check_scenario_12() {
+  local dir="$1" log="$2"
+  check "scenario 12: mismatch explained" contains "$dir/out.txt" "none of this server's addresses"
+  check "scenario 12: continue prompt asked" contains "$dir/pty.txt" "Continue anyway"
+  check "scenario 12: certbot called after y" contains "$log" "certbot certonly"
+  check "scenario 12: HTTPS enabled" contains "$dir/out.txt" "✓ HTTPS enabled"
+}
+scenario_13_setup() {
+  printf 'y\n%s\nn\n' "$DOMAIN" > "$1/answers"
+  printf 'MOCK_DNS_IP=203.0.113.10\nMOCK_IFACE_IP=203.0.113.20\nMOCK_EGRESS_IP=203.0.113.99\n' > "$1/env"
+}
+check_scenario_13() {
+  local dir="$1" log="$2"
+  check "scenario 13: no certbot call after n" not_contains "$log" "certbot"
+  check "scenario 13: keeping HTTP reported" contains "$dir/out.txt" "Keeping plain HTTP"
+  check "scenario 13: SPOOF_TLS_ON=0" contains "$dir/out.txt" "SPOOF_TLS_ON=0"
+}
+# DNS matches the IP the panel URL advertises (credentials.txt).
+scenario_14_setup() {
+  printf 'y\n%s\n' "$DOMAIN" > "$1/answers"
+  printf 'URL: http://203.0.113.10:44571/abc/\n' > "$1/data/credentials.txt"
+  printf 'MOCK_DNS_IP=203.0.113.10\nMOCK_IFACE_IP=203.0.113.20\nMOCK_EGRESS_IP=203.0.113.99\n' > "$1/env"
+}
+check_scenario_14() {
+  local dir="$1" log="$2"
+  check "scenario 14: no continue prompt when the panel URL IP matches" not_contains "$dir/pty.txt" "Continue anyway"
+  check "scenario 14: certbot called" contains "$log" "certbot certonly"
+  check "scenario 14: HTTPS enabled" contains "$dir/out.txt" "✓ HTTPS enabled"
+}
 
 run_case "scenario_1" scenario_1_setup
 run_case "scenario_2" scenario_2_setup
@@ -324,6 +379,10 @@ run_case "scenario_7" scenario_7_setup
 run_case "scenario_8" scenario_8_setup
 run_case "scenario_9" scenario_9_setup
 run_case "scenario_10" scenario_10_setup
+run_case "scenario_11" scenario_11_setup
+run_case "scenario_12" scenario_12_setup
+run_case "scenario_13" scenario_13_setup
+run_case "scenario_14" scenario_14_setup
 
 echo ""
 echo "TLS installer self-test: $PASSED passed, $FAILED failed"

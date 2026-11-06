@@ -63,6 +63,38 @@ spoof_public_ip() {
   printf '%s' "$ip"
 }
 
+# Server IP candidates, one per line, best first: addresses actually
+# assigned to this host's interfaces (a public one is the inbound IP),
+# then the IP the panel URL advertises, then outbound lookups. The
+# outbound address (what ipify sees) is only the egress IP: on hosts
+# behind NAT it differs from the inbound IP, so it must never be the
+# only candidate — a domain correctly pointed at the server would
+# otherwise be rejected as "not this server".
+spoof_server_ips() {
+  local ip
+  if command -v hostname >/dev/null; then
+    for ip in $(hostname -I 2>/dev/null || true); do
+      [[ "$ip" == *:* ]] && continue
+      case "$ip" in
+        10.*|172.1[6-9].*|172.2[0-9].*|172.3[01].*|192.168.*|100.6[4-9].*|100.7[0-9].*|100.8[0-9].*|100.9[0-9].*|100.1[01][0-9].*|100.12[0-7].*|127.*|169.254.*) ;;
+        *) printf '%s\n' "$ip" ;;
+      esac
+    done
+  fi
+  local creds="${SPOOF_DATA_DIR:-/etc/spoof-panel}/credentials.txt"
+  if [[ -f "$creds" ]]; then
+    local url host
+    url=$(grep -m1 '^URL: ' "$creds" 2>/dev/null | sed 's/^URL: *//') || true
+    host=${url#*://}
+    host=${host%%:*}
+    host=${host%%/*}
+    [[ "$host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && printf '%s\n' "$host"
+  fi
+  local out
+  out=$(spoof_public_ip)
+  [[ -n "$out" ]] && printf '%s\n' "$out"
+}
+
 spoof_port80_free() {
   if command -v ss >/dev/null && ss -ltn 2>/dev/null | grep -q ':80 '; then
     return 1
@@ -149,18 +181,40 @@ spoof_maybe_tls() {
   [[ -n "$domain" ]] || { echo '  No valid domain given; keeping plain HTTP.'; return 0; }
 
   # Pre-checks: certbot would fail later with a cryptic error, so fail
-  # fast here with the exact fix.
-  local resolved public_ip
+  # fast here with the exact fix. The domain must point at one of this
+  # server's addresses; the egress address alone is not proof, because
+  # behind NAT it differs from the inbound IP.
+  local resolved
   resolved=$(spoof_resolve_domain "$domain")
   if [[ -z "$resolved" ]]; then
     echo "  ! $domain does not resolve to any IP. Add an A record for it first, then rerun the installer."
     return 0
   fi
-  public_ip=$(spoof_public_ip)
-  if [[ -n "$public_ip" && "$resolved" != "$public_ip" ]]; then
-    echo "  ! $domain resolves to $resolved, but this server's public IP is $public_ip."
-    echo '    Point the domain at this server first, then rerun the installer.'
-    return 0
+  local candidates match="" cand
+  candidates=$(spoof_server_ips)
+  while IFS= read -r cand; do
+    [[ -n "$cand" && "$resolved" == "$cand" ]] && match="$cand"
+  done <<< "$candidates"
+  if [[ -z "$match" ]]; then
+    echo "  ! $domain resolves to $resolved, but that is none of this server's addresses I can see:"
+    if [[ -n "$candidates" ]]; then
+      printf '%s\n' "$candidates" | sed 's/^/      /'
+    else
+      echo '      (no address found)'
+    fi
+    echo '    The outbound address (what ipify sees) can differ from the inbound one behind NAT,'
+    echo '    so this check can be wrong. certbot itself is the real test: if the domain really'
+    echo '    points elsewhere, it will fail and the panel stays on plain HTTP.'
+    local proceed=""
+    if [[ -c "$SPOOF_TTY" ]] && { exec 3<>"$SPOOF_TTY"; } 2>/dev/null; then
+      printf '  Continue anyway and let certbot decide? [y/N]: ' >&3
+      IFS= read -r -t 120 proceed <&3 || proceed=""
+      exec 3>&-
+    fi
+    case "$proceed" in
+      y|Y|yes|YES) echo '  Continuing; certbot will verify the domain.' ;;
+      *) echo '  Keeping plain HTTP. Point the domain at this server, then rerun the installer.'; return 0 ;;
+    esac
   fi
   if ! spoof_port80_free; then
     echo '  ! Port 80 is already in use. certbot needs it free for the HTTP-01 challenge.'
