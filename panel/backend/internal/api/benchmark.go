@@ -782,8 +782,73 @@ func (s *Server) handleBenchmarkApply(c *gin.Context) {
 	go func() { defer s.benchWG.Done(); s.applyBenchmark(session, r, *plan, change) }()
 	c.JSON(202, session.Status())
 }
+
+// applyPeerWaitSeconds estimates how long a cold-started smart-pool
+// tunnel needs before both sides report an authenticated peer, from
+// the source counts of the pair being applied. The peer manifest is
+// the full source pool, not the active cohort: each side packs 4 bytes
+// per source and sends it in 160-byte chunks, and the engine budgets
+// 3/ProbePPS seconds per chunk in its own transfer deadline, so the
+// wait scales with the larger of the two pools. A minute is added for
+// the seed, the first heartbeat round and peer-ready gating. The floor
+// keeps small pools on the old 100-second behaviour; the cap (15
+// minutes) bounds a pathological pool so an apply cannot wait forever.
+// A 122k-source pool at PPS 25 waits about 7 minutes; the same pool
+// failed at the old fixed 100 seconds with the manifest only ~30%
+// received.
+func applyPeerWaitSeconds(localTotal, peerCount, pps int) time.Duration {
+	if pps < 1 {
+		pps = 25
+	}
+	largest := localTotal
+	if peerCount > largest {
+		largest = peerCount
+	}
+	if largest < 0 {
+		largest = 0
+	}
+	chunks := (largest*4 + 159) / 160
+	seconds := chunks*3/pps + 60
+	if seconds < 100 {
+		seconds = 100
+	}
+	if seconds > 900 {
+		seconds = 900
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// poolSourceCounts returns how many sources the new instance will sync
+// in each direction: its own pool (the manifest it sends) and the
+// configured peer sources (the manifest it receives). On any error both
+// counts stay zero and the caller falls back to the 100-second floor,
+// never worse than the old fixed wait.
+func poolSourceCounts(inst db.TunnelInstance) (localTotal, peerCount int) {
+	cfg := inst.L3Config()
+	if ips, err := cfg.Sources(); err == nil {
+		localTotal = len(ips)
+	}
+	if peers, err := cfg.PeerSources(); err == nil {
+		peerCount = len(peers)
+	}
+	return localTotal, peerCount
+}
+
 func (s *Server) applyBenchmark(session *benchmark.Session, r benchmark.Result, plan benchmarkPlan, local *benchChange) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	// The peer wait scales with the manifest (see applyPeerWaitSeconds):
+	// a cold-started smart-pool tunnel must verify sources and sync its
+	// peer manifest on both sides first, and a 122k-source pool needs
+	// about 5 minutes for that transfer alone. The old fixed 100-second
+	// wait rolled back healthy tunnels. The context covers the wait plus
+	// two minutes for finalize and rollback RPCs. The local lease is
+	// renewed on every poll so the watch goroutine cannot roll back
+	// mid-wait, and the receiver's lease is renewed by every
+	// apply_status poll. The watchdog cannot interrupt the wait either:
+	// every start resets its observation window, so it stays dormant
+	// until the peer is seen at least once.
+	localTotal, peerCount := poolSourceCounts(local.after)
+	wait := applyPeerWaitSeconds(localTotal, peerCount, local.after.PoolPPS)
+	ctx, cancel := context.WithTimeout(context.Background(), wait+2*time.Minute)
 	defer cancel()
 	token := gin.H{"token": plan.Token}
 	var failure error
@@ -809,13 +874,10 @@ func (s *Server) applyBenchmark(session *benchmark.Session, r benchmark.Result, 
 	if failure = local.commit(inv.SourceA, inv.SourceB); failure != nil {
 		return
 	}
-	// The peer wait used to be a fixed 35 seconds, but a cold-started
-	// smart-pool tunnel must verify sources and sync its manifest on
-	// both sides first; 35 seconds was too short for a large pool and
-	// rolled back healthy tunnels. The wait is now 100 seconds (inside
-	// the 2-minute apply context) and the local lease is renewed on
-	// every poll so the watch goroutine cannot roll back mid-wait.
-	deadline := time.Now().Add(100 * time.Second)
+	// The peer wait scales with the manifest (see applyPeerWaitSeconds):
+	// the old fixed 100 seconds rolled back a healthy 122k-source pair
+	// with the manifest only ~30% received.
+	deadline := time.Now().Add(wait)
 	remotePeer, remotePoolReady, remoteRejected := false, false, ""
 	for time.Now().Before(deadline) {
 		if session.Status().Status != "applying" {
@@ -849,7 +911,7 @@ func (s *Server) applyBenchmark(session *benchmark.Session, r benchmark.Result, 
 		}
 	}
 	lt := s.manager.Telemetry(local.after.ID)
-	failure = fmt.Errorf("new connection did not establish an authenticated peer; restoring previous settings (local pool ready: %t, local last rejected source: %s; remote peer: %t, remote pool ready: %t, remote last rejected source: %s)", lt.PoolReady, orNone(lt.LastRejectedSource), remotePeer, remotePoolReady, orNone(remoteRejected))
+	failure = fmt.Errorf("new connection did not establish an authenticated peer within %s; restoring previous settings (local pool ready: %t, local last rejected source: %s; remote peer: %t, remote pool ready: %t, remote last rejected source: %s)", wait, lt.PoolReady, orNone(lt.LastRejectedSource), remotePeer, remotePoolReady, orNone(remoteRejected))
 }
 
 func orNone(value string) string {

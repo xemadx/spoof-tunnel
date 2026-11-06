@@ -46,10 +46,10 @@ The same command updates an existing installation to the **latest published Rele
 - The panel and engine versions are stamped at build time. The header shows the running panel's version.
 - The panel serves HTTP. Use an HTTPS reverse proxy or SSH forwarding for remote administration.
 
-To explicitly install **v0.4.7**:
+To explicitly install **v0.4.8**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.4.7/install.sh | SPOOF_RELEASE=v0.4.7 bash
+curl -fsSL https://raw.githubusercontent.com/xemadx/spoof-tunnel/v0.4.8/install.sh | SPOOF_RELEASE=v0.4.8 bash
 ```
 
 Release packages are `spoof-tunnel-linux-amd64.tar.gz` and `spoof-tunnel-linux-arm64.tar.gz`, accompanied by archive `SHA256SUMS` and a signed `SHA256SUMS.sig`. No Go, Node.js or Rust toolchain is needed on the VPS.
@@ -137,7 +137,7 @@ Rotating local spoof sources require the **same selected set in the other end's 
 Build on Linux/WSL with the Go version specified in [go.mod](go.mod), Node.js 24 and npm:
 
 ```sh
-SPOOF_VERSION=v0.4.7 bash scripts/build.sh
+SPOOF_VERSION=v0.4.8 bash scripts/build.sh
 sudo bash dist/install.sh
 ```
 
@@ -168,7 +168,7 @@ The receiver acknowledges startup only after its raw socket is ready. ICMP retai
 
 Forwarders wait up to five seconds for their assigned TUN to be up, and Stop cancels that wait. There is still no fallback route. Running tunnel edits are rejected with HTTP 409; saving a stopped/error tunnel cancels queued recovery and requires explicit Start. A mismatched PSK/allowlist normally leaves a live core without a working peer; restarting cannot repair it.
 
-The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.4.7` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
+The installer is **not an automatic updater**. It downloads the latest release only when you explicitly execute it; use `SPOOF_RELEASE=v0.4.8` to pin an installation. IPv4 outer overhead is 81 bytes for ICMP/UDP, 93 for TCP and 73 for protocol 4/253: inner MTU 1280 produces outer IP packets of 1361/1373/1353 bytes respectively, excluding link-layer headers. Measure the actual path MTU. Fragment loss can discard an entire inner datagram; no FEC/retransmission is promised. See [review follow-up and compatibility](docs/REVIEW-2026-11-04.md).
 
 
 ### v0.3.10 connection labels
@@ -186,6 +186,10 @@ Named TXT files, selected-set deduplication, quality-based dispatch, healthy-sou
 Clearing the manual default and selecting a TXT group now commit together, including pending policy changes. Either save control uses the same atomic transaction; a rejected request leaves the previous configuration intact. Source-quality rows explain timeouts, missing reverse-path evidence and restart quarantine. Live pool summaries are readable in Persian, and log history switches atomically to a bounded, batched live stream.
 
 Settings now checks GitHub Releases and installs a newer stable panel/core pair with progress, actual downloaded bytes, mandatory checksums, a consistent SQLite backup and rollback on startup failure. The page reloads once after the new version responds; the header reads the new running version. **Upgrade to v0.4.1 once with the installer to install the independent update service.** Future updates can then be started from Settings. [Update operation and limits](docs/UPDATING.md).
+
+### v0.4.8: the connection-test apply wait scales with the pool
+
+Applying a connection-test result no longer waits a fixed 100 seconds for the new tunnels to report an authenticated peer. The wait now scales with the peer manifest — the full source pool, not the active cohort — because a cold-started tunnel must receive the whole manifest before the peer is accepted: a 122k-source pool needs about 5 minutes for that transfer alone, and the old fixed wait rolled back a healthy pair with the manifest only ~30% received. The new wait is about 7 minutes for a 122k-source pool at 25 probes/second, 100 seconds for small pools, and at most 15 minutes. The pool itself is untouched: a large pool still works, it just takes longer to sync after every restart. The applying note on the test page says so instead of promising 100 seconds. [Connection test](docs/CONNECTION-TEST.md).
 
 ### v0.4.7: free TLS certificates for the panel, minimal connection-test page
 
