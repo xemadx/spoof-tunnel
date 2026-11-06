@@ -116,7 +116,7 @@ func (c TunnelInstance) L3Config() l3.Config {
 		}
 	}
 	return l3.Config{
-		PoolPolicy:   l3.PoolPolicy{Mode: c.PoolMode, ProbePPS: c.PoolPPS},
+		PoolPolicy:   l3.PoolPolicy{Mode: c.PoolMode, ProbePPS: c.PoolPPS, ActiveSize: c.PoolActiveSize, RefreshSeconds: c.PoolRefreshSeconds},
 		AutoPeerSync: c.AutoPeerSync,
 		Role:         c.Mode,
 		LocalIP:      c.LocalIP,

@@ -13,12 +13,17 @@ import (
 
 // PoolPolicy is per link. Empty mode preserves the old packet-by-packet rotation.
 type PoolPolicy struct {
+	ActiveSize      int    `json:"active_size,omitempty"`
+	RefreshSeconds  int    `json:"refresh_seconds,omitempty"`
 	Mode            string `json:"mode"`
 	ProbePPS        int    `json:"probe_pps"`
 	CooldownSeconds int    `json:"cooldown_seconds"`
 }
 
 func (p PoolPolicy) Normalized() PoolPolicy {
+	if p.RefreshSeconds == 0 {
+		p.RefreshSeconds = 1800
+	}
 	if p.Mode == "" {
 		p.Mode = "legacy"
 	}
@@ -40,6 +45,18 @@ func (p PoolPolicy) Validate() error {
 	if p.ProbePPS < 1 || p.ProbePPS > 100 {
 		return fmt.Errorf("probe rate must be 1–100 packets/second")
 	}
+	if p.ActiveSize < 0 || p.ActiveSize > 400 {
+		return fmt.Errorf("active source count must be 0–400")
+	}
+	if p.ActiveSize > 0 && p.Mode == "legacy" {
+		return fmt.Errorf("active source set requires a smart dispatch mode")
+	}
+	if p.ActiveSize > 4*p.ProbePPS {
+		return fmt.Errorf("active source count exceeds the verification budget (maximum 4 × probe rate)")
+	}
+	if p.RefreshSeconds < 60 || p.RefreshSeconds > 86400 {
+		return fmt.Errorf("source-set refresh must be 60–86400 seconds")
+	}
 	if p.CooldownSeconds != 600 {
 		return fmt.Errorf("pool quarantine must be 600 seconds")
 	}
@@ -47,6 +64,7 @@ func (p PoolPolicy) Validate() error {
 }
 
 type SourceQuality struct {
+	Selected     bool    `json:"selected"`
 	Reason       string  `json:"reason,omitempty"`
 	IP           string  `json:"ip"`
 	State        string  `json:"state"`
@@ -61,12 +79,18 @@ type SourceQuality struct {
 	observations int
 	ready        bool
 	pending      bool
+	lastAck      time.Time
 	nextProbe    time.Time
 	validUntil   time.Time
 	streak       int
 	version      uint64
 }
 type PoolView struct {
+	Selected    int             `json:"selected"`
+	ActiveSize  int             `json:"active_size"`
+	RefreshAt   int64           `json:"refresh_at,omitempty"`
+	Generation  uint64          `json:"generation"`
+	Rebuilding  bool            `json:"rebuilding"`
 	Mode        string          `json:"mode"`
 	Total       int             `json:"total"`
 	Healthy     int             `json:"healthy"`
@@ -98,6 +122,9 @@ type sourceProbe struct {
 
 // SourcePool keeps packet selection O(1). Work and pending probes are bounded.
 type SourcePool struct {
+	verified     []int
+	verifiedPos  map[int]int
+	cohort       *sourceCohort
 	mu           sync.Mutex
 	referenceRTT time.Duration
 	policy       PoolPolicy
@@ -117,7 +144,7 @@ type SourcePool struct {
 }
 
 func NewSourcePool(ips []net.IP, policy PoolPolicy) *SourcePool {
-	p := &SourcePool{policy: policy.Normalized(), positions: map[string]int{}, pending: map[string]sourceProbe{}, goodPos: map[int]int{}, best: -1, active: -1}
+	p := &SourcePool{policy: policy.Normalized(), positions: map[string]int{}, pending: map[string]sourceProbe{}, goodPos: map[int]int{}, verifiedPos: map[int]int{}, best: -1, active: -1}
 	for _, ip := range ips {
 		key := ip.String()
 		if _, ok := p.positions[key]; ok {
@@ -127,6 +154,9 @@ func NewSourcePool(ips []net.IP, policy PoolPolicy) *SourcePool {
 		p.ips = append(p.ips, append(net.IP(nil), ip.To4()...))
 		p.states = append(p.states, SourceQuality{IP: key, State: "unknown"})
 	}
+	if p.policy.ActiveSize > 0 {
+		p.cohort = newSourceCohort()
+	}
 	return p
 }
 func (p *SourcePool) schedule(i int, at time.Time) {
@@ -134,14 +164,24 @@ func (p *SourcePool) schedule(i int, at time.Time) {
 	p.states[i].nextProbe = at
 	heap.Push(&p.due, poolDue{at, i, p.states[i].version})
 }
-func (p *SourcePool) removeGood(i int) {
-	if pos, ok := p.goodPos[i]; ok {
-		last := p.good[len(p.good)-1]
-		p.good[pos] = last
-		p.goodPos[last] = pos
-		p.good = p.good[:len(p.good)-1]
-		delete(p.goodPos, i)
+func removePoolIndex(items *[]int, positions map[int]int, i int) {
+	if pos, ok := positions[i]; ok {
+		last := (*items)[len(*items)-1]
+		(*items)[pos] = last
+		positions[last] = pos
+		*items = (*items)[:len(*items)-1]
+		delete(positions, i)
 	}
+}
+func (p *SourcePool) addSelected(i int) {
+	if _, ok := p.goodPos[i]; !ok {
+		p.goodPos[i] = len(p.good)
+		p.good = append(p.good, i)
+	}
+}
+func (p *SourcePool) removeGood(i int) {
+	removePoolIndex(&p.good, p.goodPos, i)
+	removePoolIndex(&p.verified, p.verifiedPos, i)
 	p.states[i].ready = false
 	p.recomputeBest()
 }
@@ -157,7 +197,7 @@ func (p *SourcePool) recomputeBest() {
 			p.best = i
 		}
 	}
-	if previous >= 0 && p.states[previous].ready && p.best >= 0 && p.score(previous) <= p.score(p.best)*1.15+5 {
+	if previous >= 0 && p.isSelected(previous) && p.states[previous].ready && p.best >= 0 && p.score(previous) <= p.score(p.best)*1.15+5 {
 		p.best = previous
 	}
 }
@@ -196,7 +236,7 @@ func (p *SourcePool) Select(control bool) (net.IP, error) {
 			i = p.good[p.rr%uint64(len(p.good))]
 			p.rr++
 		case "failover":
-			if p.active >= 0 && p.states[p.active].ready {
+			if p.active >= 0 && p.states[p.active].ready && p.isSelected(p.active) {
 				i = p.active
 			} else {
 				i = p.first
@@ -213,6 +253,9 @@ func (p *SourcePool) Select(control bool) (net.IP, error) {
 func (p *SourcePool) NextProbe(now time.Time) (string, net.IP) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.cohort != nil {
+		p.cohort.tick(p, now)
+	}
 	if p.policy.Mode == "legacy" || len(p.pending) >= 128 {
 		return "", nil
 	}
@@ -223,17 +266,33 @@ func (p *SourcePool) NextProbe(now time.Time) (string, net.IP) {
 	}
 	p.turn++
 	i := -1
-	// Keep the data source and control reference tested even behind a huge scan.
-	for _, candidate := range []int{p.active, p.best} {
-		if candidate >= 0 {
-			q := p.states[candidate]
-			if q.ready && !q.pending && !q.nextProbe.After(now) {
-				i = candidate
-				break
+	if p.cohort != nil {
+		i = p.cohort.maintenance(p, now)
+	} else {
+		// Keep the data source and control reference tested ahead of a bulk scan.
+		for _, candidate := range []int{p.active, p.best} {
+			if candidate >= 0 {
+				q := p.states[candidate]
+				if q.ready && !q.pending && !q.nextProbe.After(now) {
+					i = candidate
+					break
+				}
 			}
 		}
 	}
-	if i < 0 && len(p.pending) >= 126 {
+	// Complete small/MTU confirmation pairs before opening more candidates.
+	for len(p.due) > 0 && p.states[p.due[0].index].version != p.due[0].version {
+		heap.Pop(&p.due)
+	}
+	if i < 0 && len(p.due) > 0 && !p.due[0].at.After(now) {
+		candidate := p.due[0].index
+		q := p.states[candidate]
+		if !q.ready && !q.pending && q.streak > 0 {
+			heap.Pop(&p.due)
+			i = candidate
+		}
+	}
+	if len(p.pending) >= 126 && (i < 0 || !p.isSelected(i)) {
 		return "", nil
 	}
 	if i >= 0 {
@@ -327,6 +386,15 @@ func (p *SourcePool) Acknowledge(token, observed string, now time.Time) bool {
 	s := &p.states[probe.index]
 	s.pending = false
 	s.Replies++
+	staleMeasurement := !s.lastAck.IsZero() && now.Sub(s.lastAck) > p.qualityLifetime(probe.index)
+	if staleMeasurement {
+		s.streak = 0
+		s.recent = 0
+		s.observations = 0
+		s.LossPct = 0
+		s.RTTMs = 0
+	}
+	s.lastAck = now
 	p.referenceRTT = now.Sub(probe.sent)
 	recordPoolOutcome(s, false)
 	s.Failures = 0
@@ -340,10 +408,7 @@ func (p *SourcePool) Acknowledge(token, observed string, now time.Time) bool {
 		s.RTTMs = .8*s.RTTMs + .2*rtt
 	}
 	s.LossPct *= .8
-	lifetime := 3 * p.probeTimeout(probe.index)
-	if lifetime < 30*time.Second {
-		lifetime = 30 * time.Second
-	}
+	lifetime := p.qualityLifetime(probe.index)
 	s.validUntil = now.Add(lifetime)
 	if s.streak >= 2 || s.ready {
 		s.State = "healthy"
@@ -354,11 +419,17 @@ func (p *SourcePool) Acknowledge(token, observed string, now time.Time) bool {
 		}
 		if !s.ready {
 			s.ready = true
-			p.goodPos[probe.index] = len(p.good)
-			p.good = append(p.good, probe.index)
+			p.verifiedPos[probe.index] = len(p.verified)
+			p.verified = append(p.verified, probe.index)
+		}
+		if p.cohort == nil || len(p.good) < p.policy.ActiveSize {
+			p.addSelected(probe.index)
+		}
+		if p.cohort != nil {
+			p.cohort.observe(p, probe.index)
 		}
 		p.recomputeBest()
-		p.schedule(probe.index, now.Add(10*time.Second))
+		p.schedule(probe.index, p.nextQualityProbe(probe.index, now))
 	} else {
 		s.State = "testing"
 		s.Reason = "awaiting_confirmation"
@@ -372,23 +443,24 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 	// Forget stale quality without treating an untested source as failed.
 	// Batch removal keeps this maintenance O(healthy sources), outside data I/O.
 	stale := false
-	for pos := 0; pos < len(p.good); {
-		i := p.good[pos]
+	for pos := 0; pos < len(p.verified); {
+		i := p.verified[pos]
 		s := &p.states[i]
 		if now.Before(s.validUntil) {
 			pos++
 			continue
 		}
-		last := p.good[len(p.good)-1]
-		p.good[pos] = last
-		p.goodPos[last] = pos
-		p.good = p.good[:len(p.good)-1]
-		delete(p.goodPos, i)
+		wasSelected := p.isSelected(i)
+		removePoolIndex(&p.verified, p.verifiedPos, i)
+		removePoolIndex(&p.good, p.goodPos, i)
 		s.ready = false
 		s.streak = 0
 		s.State = "unknown"
 		s.Reason = "verification_expired"
-		if !s.pending {
+		if p.cohort != nil {
+			p.cohort.observe(p, i)
+		}
+		if !s.pending && (p.cohort == nil || wasSelected || p.cohort.needs(p, i)) {
 			p.schedule(i, now)
 		}
 		stale = true
@@ -425,6 +497,9 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 		if s.Failures >= 3 || (s.observations >= 5 && bits.OnesCount8(s.recent) >= 3) {
 			changed = true
 			p.removeGood(probe.index)
+			if p.cohort != nil {
+				p.cohort.forget(probe.index)
+			}
 			s.State = "quarantined"
 			if s.Failures < 3 {
 				s.Reason = "recent_probe_loss"
@@ -444,6 +519,10 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 			p.schedule(probe.index, now.Add(100*time.Millisecond))
 		}
 	}
+	if p.cohort != nil {
+		p.cohort.tick(p, now)
+		p.cohort.refill(p, now)
+	}
 	return changed
 }
 func (p *SourcePool) View(offset, limit int, filter string) PoolView {
@@ -452,8 +531,15 @@ func (p *SourcePool) View(offset, limit int, filter string) PoolView {
 	if offset < 0 {
 		offset = 0
 	}
-	v := PoolView{Mode: p.policy.Mode, Total: len(p.states), Offset: offset, Items: []SourceQuality{}}
-	if p.active >= 0 && (p.policy.Mode == "legacy" || p.states[p.active].ready) {
+	v := PoolView{Mode: p.policy.Mode, Total: len(p.states), Selected: len(p.good), ActiveSize: p.policy.ActiveSize, Offset: offset, Items: []SourceQuality{}}
+	if p.cohort != nil {
+		v.Generation = p.cohort.generation
+		if !p.cohort.refreshAt.IsZero() {
+			v.RefreshAt = p.cohort.refreshAt.Unix()
+		}
+		v.Rebuilding = p.cohort.warming
+	}
+	if p.active >= 0 && (p.policy.Mode == "legacy" || p.states[p.active].ready && p.isSelected(p.active)) {
 		v.Active = p.states[p.active].IP
 	}
 	if limit < 1 || limit > 100 {
@@ -474,7 +560,11 @@ func (p *SourcePool) View(offset, limit int, filter string) PoolView {
 		default:
 			v.Unknown++
 		}
-		if filter != "" && s.State != filter {
+		s.Selected = p.isSelected(p.positions[s.IP])
+		if filter == "selected" && !s.Selected {
+			continue
+		}
+		if filter != "" && filter != "selected" && s.State != filter {
 			continue
 		}
 		if matched >= offset && len(v.Items) < limit {
@@ -544,4 +634,34 @@ func recordPoolOutcome(s *SourceQuality, miss bool) {
 	if s.observations < 6 {
 		s.observations++
 	}
+}
+
+func (p *SourcePool) isSelected(i int) bool { _, ok := p.goodPos[i]; return ok }
+func (p *SourcePool) maintenanceInterval() time.Duration {
+	d := 10 * time.Second
+	if p.policy.ActiveSize > 0 {
+		if n := time.Duration(4*p.policy.ActiveSize) * time.Second / time.Duration(p.policy.ProbePPS); n > d {
+			d = n
+		}
+	}
+	return d
+}
+func (p *SourcePool) qualityLifetime(i int) time.Duration {
+	d := 3 * p.probeTimeout(i)
+	if d < 30*time.Second {
+		d = 30 * time.Second
+	}
+	if n := 3 * p.maintenanceInterval(); n > d {
+		d = n
+	}
+	return d
+}
+func (p *SourcePool) nextQualityProbe(i int, now time.Time) time.Time {
+	if p.cohort == nil || p.isSelected(i) || p.cohort.needs(p, i) {
+		return now.Add(p.maintenanceInterval())
+	}
+	if p.cohort.standbyHas(i) && p.cohort.preflightAt.After(now) {
+		return p.cohort.preflightAt
+	}
+	return now.Add(time.Duration(p.policy.RefreshSeconds) * time.Second)
 }

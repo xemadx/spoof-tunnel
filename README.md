@@ -186,3 +186,9 @@ Named TXT files, selected-set deduplication, quality-based dispatch, healthy-sou
 Clearing the manual default and selecting a TXT group now commit together, including pending policy changes. Either save control uses the same atomic transaction; a rejected request leaves the previous configuration intact. Source-quality rows explain timeouts, missing reverse-path evidence and restart quarantine. Live pool summaries are readable in Persian, and log history switches atomically to a bounded, batched live stream.
 
 Settings now checks GitHub Releases and installs a newer stable panel/core pair with progress, actual downloaded bytes, mandatory checksums, a consistent SQLite backup and rollback on startup failure. The page reloads once after the new version responds; the header reads the new running version. **Upgrade to v0.4.1 once with the installer to install the independent update service.** Future updates can then be started from Settings. [Update operation and limits](docs/UPDATING.md).
+
+## Compare carriers before applying
+
+In **Connection test**, pair the two panels with a temporary code and compare all 25 ordered carrier combinations using fixed spoof sources, authenticated RTT and delivered upload/download goodput. A separate confirmation creates both complementary ends or safely replaces the selected existing pair, with validation and rollback. Tests have explicit rate/time limits and label ceiling-limited results. [How it works, setup and limits](docs/CONNECTION-TEST.md).
+
+Source pools can now use a bounded set such as **100 verified sources refreshed every 30 minutes**; adaptive, round-robin and failover dispatch stay inside that set. [Source-pool details](docs/SMART-POOLS.md).

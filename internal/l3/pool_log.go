@@ -7,7 +7,7 @@ import "encoding/json"
 func PoolEvent(v PoolRuntimeView) string {
 	reason := "ready"
 	switch {
-	case v.Pool.Healthy == 0:
+	case v.Pool.Healthy == 0 || (v.Pool.ActiveSize > 0 && v.Pool.Selected == 0):
 		reason = "no_verified_source"
 	case v.AutoPeerSync && !v.OurSourcesAccepted:
 		reason = "awaiting_peer_manifest"
@@ -33,7 +33,11 @@ func PoolEvent(v PoolRuntimeView) string {
 		PeerProgress     int    `json:"peer_progress"`
 		Reason           string `json:"reason"`
 		Detail           string `json:"detail,omitempty"`
-	}{"spoof_pool", v.Pool.Mode, v.Pool.Total, v.Pool.Healthy, v.Pool.Testing, v.Pool.Unknown, v.Pool.Quarantined, v.Pool.Active, v.PeerReady, v.OurSourcesAccepted, v.ControlFresh, v.Peer.Status, v.Peer.Count, v.Peer.Progress, reason, v.Peer.Error}
+		Selected         int    `json:"selected"`
+		ActiveSize       int    `json:"active_size"`
+		Generation       uint64 `json:"generation"`
+		Rebuilding       bool   `json:"rebuilding"`
+	}{"spoof_pool", v.Pool.Mode, v.Pool.Total, v.Pool.Healthy, v.Pool.Testing, v.Pool.Unknown, v.Pool.Quarantined, v.Pool.Active, v.PeerReady, v.OurSourcesAccepted, v.ControlFresh, v.Peer.Status, v.Peer.Count, v.Peer.Progress, reason, v.Peer.Error, v.Pool.Selected, v.Pool.ActiveSize, v.Pool.Generation, v.Pool.Rebuilding}
 	b, _ := json.Marshal(event)
 	return string(b)
 }

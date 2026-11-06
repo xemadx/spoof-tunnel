@@ -109,6 +109,9 @@ export function PoolManager({
   const [mode, setMode] = useState("legacy");
   const [pps, setPPS] = useState(25);
   const [auto, setAuto] = useState(false);
+  const [bounded, setBounded] = useState(false);
+  const [capacity, setCapacity] = useState(100);
+  const [minutes, setMinutes] = useState(30);
   const [state, setState] = useState<PoolState>();
   const [offset, setOffset] = useState(0);
   const [filter, setFilter] = useState("");
@@ -148,6 +151,9 @@ export function PoolManager({
         setIDs(result.files.filter((f) => f.enabled).map((f) => f.id));
         setMode(result.mode);
         setPPS(result.probe_pps);
+        setBounded(!!result.active_size);
+        setCapacity(result.active_size || 100);
+        setMinutes((result.refresh_seconds || 1800) / 60);
         setAuto(result.auto_peer_sync);
       }
     },
@@ -252,7 +258,18 @@ export function PoolManager({
       await saveAll();
     });
   const manualDirty = manualLoaded && manual !== manualBase;
-  const validPPS = Number.isInteger(pps) && pps >= 1 && pps <= 100;
+  const validPPS =
+    Number.isInteger(pps) &&
+    pps >= 1 &&
+    pps <= 100 &&
+    (!bounded ||
+      (mode !== "legacy" &&
+        Number.isInteger(capacity) &&
+        capacity >= 1 &&
+        capacity <= Math.min(400, 4 * pps) &&
+        Number.isInteger(minutes * 60) &&
+        minutes >= 1 &&
+        minutes <= 1440));
   const validSelection = !!data?.files.some(
     (file) =>
       ids.includes(file.id) &&
@@ -273,7 +290,14 @@ export function PoolManager({
   };
   const saveAll = async () => {
     if (!data) return;
-    const settings = { ids, mode, probe_pps: pps, auto_peer_sync: auto };
+    const settings = {
+      ids,
+      mode,
+      probe_pps: pps,
+      active_size: bounded ? capacity : 0,
+      refresh_seconds: Math.round(minutes * 60),
+      auto_peer_sync: auto,
+    };
     const result = manualDirty
       ? await api.poolDefaultSave(
           id,
@@ -289,6 +313,8 @@ export function PoolManager({
     onApplied(result.updated_at, {
       pool_mode: mode,
       pool_pps: pps,
+      pool_active_size: bounded ? capacity : 0,
+      pool_refresh_seconds: Math.round(minutes * 60),
       auto_peer_sync: auto,
     });
     draftDirtyRef.current = false;
@@ -307,6 +333,8 @@ export function PoolManager({
     !!data &&
     (mode !== data.mode ||
       pps !== data.probe_pps ||
+      (bounded ? capacity : 0) !== (data.active_size || 0) ||
+      Math.round(minutes * 60) !== (data.refresh_seconds || 1800) ||
       auto !== data.auto_peer_sync ||
       ids.join() !==
         data.files
@@ -638,6 +666,13 @@ export function PoolManager({
                   placeholder="هر خط یک IPv4"
                 />
               </label>
+              {bounded && !validPPS && (
+                <p className="pool-note" role="alert">
+                  بودجهٔ آزمون باید ۱ تا ۱۰۰ بسته در ثانیه، تعداد منتخب ۱ تا{" "}
+                  {num(Math.max(1, Math.min(400, 4 * pps)))} و بازسازی ۱ تا ۱۴۴۰
+                  دقیقه باشد.
+                </p>
+              )}
               <div className="pool-apply">
                 <p className="hint">
                   {manualDirty && !validSelection
@@ -684,6 +719,76 @@ export function PoolManager({
       </section>
       <section className="panel">
         <h2>روش استفاده از مبدأها</h2>
+        <div className="pool-note">
+          <div>
+            <label className="pool-check">
+              <input
+                type="checkbox"
+                checked={bounded}
+                disabled={running || !!busy}
+                onChange={(e) => {
+                  draftDirtyRef.current = true;
+                  setBounded(e.target.checked);
+                  if (e.target.checked && mode === "legacy") {
+                    setMode("adaptive");
+                    setAuto(true);
+                  }
+                }}
+              />
+              <strong>استفاده از مجموعهٔ منتخب</strong>
+            </label>
+            <p className="hint">
+              داده فقط با مبدأهای تأییدشدهٔ منتخب ارسال می‌شود. آزمون کشف از
+              بقیهٔ آی‌پی‌های گروه‌های فعال هم استفاده می‌کند؛ بهترین‌ها از میان
+              مبدأهای ارزیابی‌شده انتخاب می‌شوند.
+            </p>
+            {bounded && (
+              <div className="grid-2">
+                <label className="field">
+                  <span>سقف مبدأهای در حال استفاده</span>
+                  <input
+                    className="input mono"
+                    type="number"
+                    min={1}
+                    aria-label="سقف مبدأهای در حال استفاده"
+                    max={Math.min(400, 4 * pps)}
+                    value={capacity}
+                    disabled={running || !!busy}
+                    onChange={(e) => {
+                      draftDirtyRef.current = true;
+                      setCapacity(Number(e.target.value));
+                    }}
+                  />
+                  <small className="hint">
+                    تا {num(Math.min(400, 4 * pps))} مبدأ با بودجهٔ آزمون فعلی؛
+                    جای خالی با مبدأ تأییدنشده پر نمی‌شود.
+                  </small>
+                </label>
+                <label className="field">
+                  <span>بازسازی مجموعه هر چند دقیقه</span>
+                  <input
+                    className="input mono"
+                    type="number"
+                    min={1}
+                    max={1440}
+                    step={1}
+                    aria-label="بازسازی مجموعه هر چند دقیقه"
+                    value={minutes}
+                    disabled={running || !!busy}
+                    onChange={(e) => {
+                      draftDirtyRef.current = true;
+                      setMinutes(Number(e.target.value));
+                    }}
+                  />
+                  <small className="hint">
+                    خرابی زودتر جبران می‌شود؛ پیش از بازسازی، نامزدهای برتر
+                    دوباره آزموده می‌شوند.
+                  </small>
+                </label>
+              </div>
+            )}
+          </div>
+        </div>
         <div
           className="pool-modes"
           role="radiogroup"
@@ -754,6 +859,13 @@ export function PoolManager({
             </label>
           </div>
         </details>
+        {bounded && !validPPS && (
+          <p className="pool-note" role="alert">
+            بودجهٔ آزمون باید ۱ تا ۱۰۰ بسته در ثانیه، تعداد منتخب ۱ تا{" "}
+            {num(Math.max(1, Math.min(400, 4 * pps)))} و بازسازی ۱ تا ۱۴۴۰ دقیقه
+            باشد.
+          </p>
+        )}
         <div className="pool-apply">
           <span className="hint">
             {manualDirty
@@ -775,9 +887,7 @@ export function PoolManager({
               (!dirty && !manualDirty) ||
               !data ||
               !validSelection ||
-              !Number.isInteger(pps) ||
-              pps < 1 ||
-              pps > 100
+              !validPPS
             }
             onClick={apply}
           >
@@ -877,6 +987,7 @@ export function PoolManager({
               }}
             >
               <option value="">همهٔ وضعیت‌ها</option>
+              <option value="selected">فقط مبدأهای منتخب</option>
               {Object.entries(STATES).map(([key, label]) => (
                 <option key={key} value={key}>
                   {label}
@@ -885,6 +996,22 @@ export function PoolManager({
             </select>
           </label>
         </div>
+        {!!rt?.pool.active_size && (
+          <div className="pool-note">
+            <div>
+              <strong>
+                {num(rt.pool.selected || 0)} از {num(rt.pool.active_size)} مبدأ
+                منتخب
+              </strong>
+              <p className="hint">
+                نسل {num(rt.pool.generation || 1)} ·{" "}
+                {rt.pool.rebuilding
+                  ? "بازآزمایی نامزدهای بازسازی در حال انجام است"
+                  : `بازسازی بعدی: ${rt.pool.refresh_at ? new Date(rt.pool.refresh_at * 1000).toLocaleTimeString("fa-IR") : "—"}`}
+              </p>
+            </div>
+          </div>
+        )}
         {rt?.pool.active && (
           <p className="hint">
             آخرین مبدأ انتخاب‌شده برای داده:{" "}
@@ -916,6 +1043,7 @@ export function PoolManager({
                   <td>
                     <span className={`pool-state ${row.state}`}>
                       {STATES[row.state] ?? row.state}
+                      {row.selected ? " · منتخب" : ""}
                     </span>
                     {row.reason && REASONS[row.reason] && (
                       <small className="pool-reason">

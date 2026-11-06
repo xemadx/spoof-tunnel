@@ -23,6 +23,7 @@ import (
 
 // PacketConn owns exactly one receive protocol and one raw send socket.
 type PacketConn struct {
+	tag            []byte
 	rejectedSource atomic.Value
 	lastSourceLog  time.Time
 	rejected       atomic.Uint64
@@ -47,6 +48,12 @@ type PacketConn struct {
 }
 
 func NewPacketConn(c Config) (*PacketConn, error) {
+	return NewTaggedPacketConn(c, nil)
+}
+
+// NewTaggedPacketConn isolates an ephemeral benchmark from production frames.
+// The tag is a demultiplexer, never an authentication substitute.
+func NewTaggedPacketConn(c Config, tag []byte) (*PacketConn, error) {
 	recv, err := net.ListenIP(fmt.Sprintf("ip4:%d", Protocol(c.Receive)), &net.IPAddr{IP: net.ParseIP(c.LocalIP)})
 	if err != nil {
 		return nil, fmt.Errorf("receive raw socket: %w", err)
@@ -92,6 +99,7 @@ func NewPacketConn(c Config) (*PacketConn, error) {
 		allowed[ip.String()] = true
 	}
 	return &PacketConn{
+		tag:       append([]byte(nil), tag...),
 		pool:      NewSourcePool(rawSources, c.PoolPolicy),
 		controlRX: poolAdmissionPrefix(c, true), controlTX: poolAdmissionPrefix(c, false),
 		cfg:     c,
@@ -139,6 +147,9 @@ func (p *PacketConn) SendFrom(payload []byte, chosen net.IP) error {
 	defer p.mu.Unlock()
 	if p.closed {
 		return net.ErrClosed
+	}
+	if len(p.tag) > 0 {
+		payload = append(append([]byte(nil), p.tag...), payload...)
 	}
 	proto := Protocol(p.cfg.Send)
 	extra := 0
@@ -246,7 +257,16 @@ func (p *PacketConn) receivePacket(controlAdmission bool) ([]byte, string, bool,
 			}
 			data = data[8:length]
 		}
+		if len(p.tag) == 0 && bytes.HasPrefix(data, []byte("SBF1")) {
+			continue
+		}
 		control := len(p.controlRX) > 0 && len(data) > len(p.controlRX) && bytes.Equal(data[:len(p.controlRX)], p.controlRX)
+		if len(p.tag) > 0 {
+			if !bytes.HasPrefix(data, p.tag) {
+				continue
+			}
+			data = data[len(p.tag):]
+		}
 		if !allowed {
 			if !controlAdmission || !control {
 				p.rejected.Add(1)

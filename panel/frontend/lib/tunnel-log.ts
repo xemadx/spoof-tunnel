@@ -32,7 +32,7 @@ export function formatTunnelLog(line: string): string {
         ? (event[key] as number).toLocaleString("fa-IR")
         : "۰";
     const active = text("active") || "ندارد";
-    return `${line.slice(0, index)}استخر | ${modes[text("mode")] || "روش نامشخص"} | ${reasons[text("reason")] || "بررسی وضعیت"} | قابل استفاده ${count("healthy")} از ${count("total")} | در آزمون ${count("testing")} | قرنطینه ${count("quarantined")} | ارزیابی نشده ${count("unknown")} | مبدأ فعال ${active} | فهرست مقابل ${peer[text("peer_status")] || "نامشخص"}، ${count("peer_count")} مبدأ${text("peer_status") === "receiving" ? "، " + count("peer_progress") + "٪" : ""}${text("detail") ? " | " + text("detail") : ""}`;
+    return `${line.slice(0, index)}استخر | ${modes[text("mode")] || "روش نامشخص"} | ${reasons[text("reason")] || "بررسی وضعیت"} | قابل استفاده ${count("healthy")} از ${count("total")}${typeof event.active_size === "number" && event.active_size > 0 ? ` | منتخب ${count("selected")} از ${count("active_size")}، نسل ${count("generation")}${event.rebuilding ? "، بازآزمایی بازسازی" : ""}` : ""} | در آزمون ${count("testing")} | قرنطینه ${count("quarantined")} | ارزیابی نشده ${count("unknown")} | مبدأ فعال ${active} | فهرست مقابل ${peer[text("peer_status")] || "نامشخص"}، ${count("peer_count")} مبدأ${text("peer_status") === "receiving" ? "، " + count("peer_progress") + "٪" : ""}${text("detail") ? " | " + text("detail") : ""}`;
   } catch {
     return line;
   }

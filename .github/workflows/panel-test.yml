@@ -29,7 +29,7 @@ jobs:
           node-version: '24'
           cache: npm
           cache-dependency-path: panel/frontend/package-lock.json
-      - run: go test -race ./internal/l3 ./internal/tester
+      - run: go test -race ./internal/l3 ./internal/tester ./internal/benchmark
       - run: go test -race ./internal/...
         working-directory: panel/backend
       - run: bash scripts/build.sh
@@ -39,6 +39,17 @@ jobs:
         working-directory: panel/frontend
       - name: Compile the privileged L3 race-test runner once
         run: go test -race -c -o dist/l3.test ./internal/l3
+      - name: Compile benchmark network and API regressions once
+        run: |
+          go test -race -c -o dist/benchmark.test ./internal/benchmark
+          (cd panel/backend && go test -race -c -o ../../dist/benchmark-api.test ./internal/api)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validated-benchmark-tests
+          path: |
+            dist/benchmark.test
+            dist/benchmark-api.test
+          retention-days: 3
       - uses: actions/upload-artifact@v4
         with:
           name: validated-l3-test
@@ -63,7 +74,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [carriers, smart, diagnostics, multipeer, raw]
+        suite: [carriers, smart, diagnostics, multipeer, raw, benchmark]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -80,6 +91,18 @@ jobs:
         with:
           name: validated-l3-test
           path: dist
+      - uses: actions/download-artifact@v4
+        if: matrix.suite == 'benchmark'
+        with:
+          name: validated-benchmark-tests
+          path: dist
+      - name: Authenticated carrier benchmark, loss injection and apply rollback
+        if: matrix.suite == 'benchmark'
+        run: |
+          chmod +x dist/benchmark.test dist/benchmark-api.test
+          sudo ./dist/benchmark.test -test.v
+          sudo ./dist/benchmark-api.test -test.run '^TestBenchmark' -test.v
+          sudo python3 scripts/integration_benchmark.py
       - name: Privileged L3 race regressions on all carrier pairs
         if: matrix.suite == 'raw'
         run: chmod +x dist/l3.test && sudo ./dist/l3.test -test.v

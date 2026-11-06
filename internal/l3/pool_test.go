@@ -219,6 +219,8 @@ func TestPoolActiveSourceBypassesLargeDiscoveryBacklog(t *testing.T) {
 	p.states[active].State = "healthy"
 	p.states[active].validUntil = now.Add(time.Minute)
 	p.good = []int{active}
+	p.verified = []int{active}
+	p.verifiedPos[active] = 0
 	p.goodPos[active] = 0
 	p.best = active
 	p.active = active

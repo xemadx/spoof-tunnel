@@ -20,6 +20,7 @@ const NAV_ITEMS = [
   { path: "/dashboard/pair", icon: IconPair, label: "ساخت اتصال" },
   { path: "/dashboard/tunnels", icon: IconTunnels, label: "اتصال‌ها" },
   { path: "/dashboard/tester", icon: IconTester, label: "آزمون اسپوف" },
+  { path: "/dashboard/connection-test", icon: IconPair, label: "آزمون اتصال" },
   { path: "/dashboard/settings", icon: IconSettings, label: "تنظیمات" },
 ];
 
@@ -111,7 +112,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <ThemeToggle />
           <a
             className="header-link-btn"
-            href="https://github.com/emad1381/spoof-tunnel"
+            href="https://github.com/xemadx/spoof-tunnel"
             target="_blank"
             rel="noopener noreferrer"
           >
@@ -169,7 +170,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             </button>
             <a
               className="sidebar-item"
-              href="https://github.com/emad1381/spoof-tunnel#readme"
+              href="https://github.com/xemadx/spoof-tunnel#readme"
               target="_blank"
               rel="noopener noreferrer"
             >

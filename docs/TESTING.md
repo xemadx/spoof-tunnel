@@ -78,3 +78,13 @@ Go race tests exercise all three smart dispatch modes through selection, source 
 The updater suite builds two API/SQLite executables and replaces/restarts real processes using isolated service hooks. It verifies a successful upgrade, unchanged JWT/password/group data, database-and-binary rollback after an injected migration/startup failure, checksum rejection, unsafe archive rejection, version mismatch, download bounds and real byte progress. A committed WAL backup test verifies snapshot contents. The production systemd sandbox boundary is exercised separately with unique fixture services (`scripts/integration_updater_systemd.py`), without modifying any installed panel. Log tests verify atomic history/subscription boundaries and slow-subscriber resynchronization.
 
 The workflow builds/validates once, shares the exact binary and privileged race-test artifacts, and runs independent carrier, smart-policy, raw, diagnostics and multi-peer suites in parallel. Every network job must pass before tagged packages are released. ARM64 packages are cross-compiled and their architecture/checksums checked; no native ARM64 runtime test is claimed.
+
+## v0.4.2 cohorts and connection benchmarks
+
+- `go test -race ./internal/benchmark`: raw/AEAD 25-cell matrix (root), delivered-goodput loss/duplicate injection, counters and capability guards.
+- `go test -race ./internal/l3 -run 'TestCohort|TestPoolActiveSource'`: all three selected-set policies, current-only refresh, underfilled sets and probe-budget validation.
+- `(cd panel/backend && go test -race ./internal/api -run TestBenchmark)`: scoped HTTP orchestration, explicit approval, both-end creation, failed-start rollback, journal crash recovery and newer-edit guards; raw portion requires root.
+- `sudo python3 scripts/integration_benchmark.py`: actual built panels/cores in two namespaces, 25 tests alongside a live TUN, approved UDP/raw-TCP replacement, preserved forwards and TCP/UDP/ICMP application traffic.
+- `npm run test:ui`: carrier matrix, receiver capability, confirmation separation, bounded cohort budgets and mobile/desktop/theme regressions.
+
+CI compiles privileged race test binaries once, shares them as artifacts, and runs the benchmark suite separately in parallel with the existing carrier/smart/multipeer/diagnostic suites. The bounded apply-offer regression prevents full source inventories entering a raw datagram; the namespace test verifies ordinary link MTU rather than relying on loopback's large MTU.

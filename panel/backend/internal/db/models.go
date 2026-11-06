@@ -48,15 +48,17 @@ type TunnelInstance struct {
 	ClientPort  int    `gorm:"default:5001" json:"client_port"`
 
 	// Spoof
-	PeerPoolRevision string `json:"peer_pool_revision"`
-	PoolMode         string `json:"pool_mode"`
-	PoolPPS          int    `json:"pool_pps"`
-	AutoPeerSync     bool   `json:"auto_peer_sync"`
-	SpoofIP          string `json:"spoof_ip"`
-	SpoofPort        int    `gorm:"default:443" json:"spoof_port"`
-	PeerSpoofIP      string `json:"peer_spoof_ip"`
-	PeerSpoofIPList  string `gorm:"type:text" json:"peer_spoof_ip_list"`
-	SpoofIPList      string `gorm:"type:text" json:"spoof_ip_list"` // inline IPs, newline-separated
+	PeerPoolRevision   string `json:"peer_pool_revision"`
+	PoolMode           string `json:"pool_mode"`
+	PoolPPS            int    `json:"pool_pps"`
+	PoolActiveSize     int    `json:"pool_active_size"`
+	PoolRefreshSeconds int    `json:"pool_refresh_seconds"`
+	AutoPeerSync       bool   `json:"auto_peer_sync"`
+	SpoofIP            string `json:"spoof_ip"`
+	SpoofPort          int    `gorm:"default:443" json:"spoof_port"`
+	PeerSpoofIP        string `json:"peer_spoof_ip"`
+	PeerSpoofIPList    string `gorm:"type:text" json:"peer_spoof_ip_list"`
+	SpoofIPList        string `gorm:"type:text" json:"spoof_ip_list"` // inline IPs, newline-separated
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`

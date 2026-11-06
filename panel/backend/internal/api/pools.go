@@ -66,7 +66,7 @@ func (s *Server) handlePoolList(c *gin.Context) {
 	if peerCount == 0 && inst.PeerSpoofIP != "" {
 		peerCount = 1
 	}
-	c.JSON(200, gin.H{"files": files, "mode": l3.PoolPolicy{Mode: inst.PoolMode}.Normalized().Mode, "probe_pps": l3.PoolPolicy{ProbePPS: inst.PoolPPS}.Normalized().ProbePPS, "auto_peer_sync": inst.AutoPeerSync, "total": total, "peer_count": peerCount, "legacy_content": len(files) == 0 && strings.TrimSpace(inst.SpoofIPList) != "", "updated_at": inst.UpdatedAt})
+	c.JSON(200, gin.H{"files": files, "mode": l3.PoolPolicy{Mode: inst.PoolMode}.Normalized().Mode, "probe_pps": l3.PoolPolicy{ProbePPS: inst.PoolPPS}.Normalized().ProbePPS, "active_size": inst.PoolActiveSize, "refresh_seconds": l3.PoolPolicy{RefreshSeconds: inst.PoolRefreshSeconds}.Normalized().RefreshSeconds, "auto_peer_sync": inst.AutoPeerSync, "total": total, "peer_count": peerCount, "legacy_content": len(files) == 0 && strings.TrimSpace(inst.SpoofIPList) != "", "updated_at": inst.UpdatedAt})
 }
 func (s *Server) handlePoolUpload(c *gin.Context) {
 	inst, ok := s.poolInstance(c)
@@ -154,18 +154,20 @@ func (s *Server) handlePoolMigrate(c *gin.Context) {
 }
 
 type poolSelection struct {
-	IDs       []uint    `json:"ids"`
-	Mode      string    `json:"mode"`
-	PPS       int       `json:"probe_pps"`
-	AutoSync  bool      `json:"auto_peer_sync"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ActiveSize     int       `json:"active_size"`
+	RefreshSeconds int       `json:"refresh_seconds"`
+	IDs            []uint    `json:"ids"`
+	Mode           string    `json:"mode"`
+	PPS            int       `json:"probe_pps"`
+	AutoSync       bool      `json:"auto_peer_sync"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func savePoolSelection(tx *gorm.DB, inst *db.TunnelInstance, req poolSelection) error {
 	if len(req.IDs) > 65 || len(req.IDs) == 0 {
 		return fmt.Errorf("select between 1 and 65 non-empty groups")
 	}
-	policy := l3.PoolPolicy{Mode: req.Mode, ProbePPS: req.PPS}.Normalized()
+	policy := l3.PoolPolicy{Mode: req.Mode, ProbePPS: req.PPS, ActiveSize: req.ActiveSize, RefreshSeconds: req.RefreshSeconds}.Normalized()
 	if err := policy.Validate(); err != nil {
 		return err
 	}
@@ -202,6 +204,8 @@ func savePoolSelection(tx *gorm.DB, inst *db.TunnelInstance, req poolSelection) 
 	inst.SpoofIPList = strings.Join(ips, "\n")
 	inst.PoolMode = policy.Mode
 	inst.PoolPPS = policy.ProbePPS
+	inst.PoolActiveSize = policy.ActiveSize
+	inst.PoolRefreshSeconds = policy.RefreshSeconds
 	inst.AutoPeerSync = req.AutoSync
 	if err := inst.Validate(); err != nil {
 		return err

@@ -30,7 +30,7 @@ def main():
                             cfg['spoof_sources']=[['198.51.100.10','198.51.100.11'],['198.51.100.20','198.51.100.21']][i]
                             cfg['peer_spoofs']=[['198.51.100.20','198.51.100.21'],['198.51.100.10','198.51.100.11']][i]
                         if os.environ.get('SPOOF_SMART_POOL'):
-                            cfg['pool_policy']={'mode':os.environ.get('SPOOF_POOL_MODE','adaptive'),'probe_pps':100}
+                            cfg['pool_policy']={'mode':os.environ.get('SPOOF_POOL_MODE','adaptive'),'probe_pps':100, 'active_size':int(os.environ.get('SPOOF_ACTIVE_SIZE','0')), 'refresh_seconds':int(os.environ.get('SPOOF_REFRESH_SECONDS','1800'))}
                             cfg['auto_peer_sync']=True
                             cfg['pool_state_file']=str(pathlib.Path(tmp)/f'{role}-state.json')
                             cfg['control_socket']=str(pathlib.Path(tmp)/f'{role}.sock')

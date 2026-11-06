@@ -61,6 +61,8 @@ func buildPair(p pairRequest) (db.TunnelInstance, db.TunnelInstance, error) {
 			c.Engine = "tun"
 			c.PoolMode = "adaptive"
 			c.PoolPPS = 25
+			c.PoolActiveSize = 100
+			c.PoolRefreshSeconds = 1800
 			c.AutoPeerSync = true
 			c.Enabled = p.AutoStart
 			c.TunInterface = "sp" + hex.EncodeToString(key[:3])

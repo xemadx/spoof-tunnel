@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"github.com/ParsaKSH/spoof-tunnel/internal/benchmark"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/updater"
 	"net/http"
@@ -19,16 +21,23 @@ import (
 
 // Server is the API server
 type Server struct {
-	updates    *updater.Updater
-	db         *gorm.DB
-	manager    *manager.Manager
-	tester     *tester.Runner
-	router     *gin.Engine
-	webPath    string
-	version    string
-	mutationMu *sync.Mutex
-	loginMu    sync.Mutex
-	logins     map[string][]time.Time
+	benchmark    *benchmark.Runner
+	benchMu      sync.Mutex
+	benchDraft   *benchmarkDraft
+	benchVersion time.Time
+	benchPlan    *benchmarkPlan
+	benchCancel  context.CancelFunc
+	benchWG      sync.WaitGroup
+	updates      *updater.Updater
+	db           *gorm.DB
+	manager      *manager.Manager
+	tester       *tester.Runner
+	router       *gin.Engine
+	webPath      string
+	version      string
+	mutationMu   *sync.Mutex
+	loginMu      sync.Mutex
+	logins       map[string][]time.Time
 }
 
 // NewServer creates a new API server. version is the panel release
@@ -55,6 +64,7 @@ func NewServer(database *gorm.DB, mgr *manager.Manager, webPath string, version 
 
 	s := &Server{
 		mutationMu: mgr.MutationGuard(),
+		benchmark:  benchmark.NewRunner(benchmark.RawFactory),
 		updates:    updater.New(version, mgr.DataDir()),
 		db:         database,
 		manager:    mgr,
@@ -65,6 +75,7 @@ func NewServer(database *gorm.DB, mgr *manager.Manager, webPath string, version 
 		logins:     make(map[string][]time.Time),
 	}
 
+	s.recoverBenchmarkChanges()
 	s.setupRoutes()
 	return s
 }
@@ -133,6 +144,13 @@ func (s *Server) setupRoutes() {
 			protected.POST("/instances/:id/forwards", s.handleCreateForward)
 			protected.DELETE("/instances/:id/forwards/:ruleID", s.handleDeleteForward)
 
+			// Isolated carrier-pair benchmark
+			protected.GET("/connection-test", func(c *gin.Context) { c.JSON(200, s.benchmark.Status()) })
+			protected.POST("/connection-test/receiver", s.handleBenchmarkReceiver)
+			protected.POST("/connection-test/start", s.handleBenchmarkStart)
+			protected.POST("/connection-test/stop", s.handleBenchmarkStop)
+			protected.POST("/connection-test/preview", s.handleBenchmarkPreview)
+			protected.POST("/connection-test/apply", s.handleBenchmarkApply)
 			// Tester
 			protected.POST("/tester/start", s.handleTesterStart)
 			protected.GET("/tester/status", s.handleTesterStatus)
@@ -189,4 +207,14 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 }
 
 // Close joins the diagnostic worker before application shutdown.
-func (s *Server) Close() { s.tester.Stop(); s.manager.StopAll() }
+func (s *Server) Close() {
+	s.benchmark.Stop()
+	s.benchMu.Lock()
+	if s.benchCancel != nil {
+		s.benchCancel()
+	}
+	s.benchMu.Unlock()
+	s.benchWG.Wait()
+	s.tester.Stop()
+	s.manager.StopAll()
+}
