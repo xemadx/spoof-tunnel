@@ -62,6 +62,17 @@ jobs:
           path: packages
           merge-multiple: true
       - run: cd packages && sha256sum *.tar.gz > SHA256SUMS
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Sign the release checksums
+        run: |
+          go run ./cmd/sign-release --key "$SPOOF_RELEASE_SIGNING_KEY" --file packages/SHA256SUMS --out packages/SHA256SUMS.sig
+          test -s packages/SHA256SUMS.sig
+        env:
+          SPOOF_RELEASE_SIGNING_KEY: ${{ secrets.SPOOF_RELEASE_SIGNING_KEY }}
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
