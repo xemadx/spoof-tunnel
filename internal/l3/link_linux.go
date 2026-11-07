@@ -31,12 +31,12 @@ type PacketConn struct {
 	recv           *net.IPConn
 	send           int
 	sources        [][4]byte
-	srcIdx         uint64
+	srcIdx         atomic.Uint64
 	peerIP         [4]byte
+	peerMu         sync.RWMutex
 	peers          map[string]bool
 	recvBuf        []byte
-	mu             sync.Mutex
-	closed         bool
+	closed         atomic.Bool
 	closeOnce      sync.Once
 	pool           *SourcePool
 	controlRX      []byte
@@ -73,7 +73,8 @@ func NewTaggedPacketConn(c Config, tag []byte) (*PacketConn, error) {
 		syscall.Close(fd)
 		return nil, err
 	}
-	_ = recv.SetReadBuffer(4 * 1024 * 1024)
+	_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 4*1024*1024)
+	_ = recv.SetReadBuffer(8 * 1024 * 1024)
 
 	rawSources, err := c.Sources()
 	if err != nil {
@@ -127,6 +128,19 @@ func checksum(b []byte) uint16 {
 	return ^uint16(n)
 }
 
+func (p *PacketConn) isPeerAllowed(source string) bool {
+	p.peerMu.RLock()
+	allowed := p.peers[source]
+	p.peerMu.RUnlock()
+	return allowed
+}
+
+func (p *PacketConn) setPeers(peers map[string]bool) {
+	p.peerMu.Lock()
+	p.peers = peers
+	p.peerMu.Unlock()
+}
+
 func (p *PacketConn) Send(payload []byte) error     { return p.sendSelected(payload, true) }
 func (p *PacketConn) SendData(payload []byte) error { return p.sendSelected(payload, false) }
 func (p *PacketConn) sendSelected(payload []byte, control bool) error {
@@ -143,9 +157,7 @@ func (p *PacketConn) sendSelected(payload []byte, control bool) error {
 	return p.SendFrom(payload, nil)
 }
 func (p *PacketConn) SendFrom(payload []byte, chosen net.IP) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.closed {
+	if p.closed.Load() {
 		return net.ErrClosed
 	}
 	if len(p.tag) > 0 {
@@ -165,9 +177,9 @@ func (p *PacketConn) SendFrom(payload []byte, chosen net.IP) error {
 	b[8] = 64
 	b[9] = byte(proto)
 
-	// Rotate source IPv4 round-robin when multiple sources are configured.
-	src := p.sources[p.srcIdx%uint64(len(p.sources))]
-	p.srcIdx++
+	// Rotate source IPv4 round-robin when multiple sources are configured (lockless atomic).
+	idx := p.srcIdx.Add(1) - 1
+	src := p.sources[idx%uint64(len(p.sources))]
 	if chosen != nil {
 		copy(src[:], chosen.To4())
 	}
@@ -225,9 +237,7 @@ func (p *PacketConn) receivePacket(controlAdmission bool) ([]byte, string, bool,
 			return nil, "", false, err
 		}
 		source := addr.IP.String()
-		p.mu.Lock()
-		allowed := p.peers[source]
-		p.mu.Unlock()
+		allowed := p.isPeerAllowed(source)
 
 		data := b[:n]
 		proto := Protocol(p.cfg.Receive)
@@ -294,10 +304,8 @@ func (p *PacketConn) receivePacket(controlAdmission bool) ([]byte, string, bool,
 
 func (p *PacketConn) Close() {
 	p.closeOnce.Do(func() {
+		p.closed.Store(true)
 		_ = p.recv.Close()
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		p.closed = true
 		_ = syscall.Close(p.send)
 	})
 }
@@ -316,7 +324,10 @@ func openTun(c Config) (*os.File, error) {
 		return nil, fmt.Errorf("create exclusive TUN %s: %w", c.Interface, errno)
 	}
 	f := os.NewFile(uintptr(fd), "/dev/net/tun")
-	for _, args := range [][]string{{"address", "add", c.Address, "dev", c.Interface}, {"link", "set", "dev", c.Interface, "mtu", fmt.Sprint(c.MTU), "up"}} {
+	for _, args := range [][]string{
+		{"address", "add", c.Address, "dev", c.Interface},
+		{"link", "set", "dev", c.Interface, "mtu", fmt.Sprint(c.MTU), "txqueuelen", "2000", "up"},
+	} {
 		if out, err := exec.Command("ip", args...).CombinedOutput(); err != nil {
 			f.Close()
 			return nil, fmt.Errorf("configure TUN: %s: %w", out, err)

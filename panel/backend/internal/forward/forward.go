@@ -168,6 +168,13 @@ func (f *Forwarder) Stats() Stats {
 	}
 }
 
+var copyBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 64*1024)
+		return &b
+	},
+}
+
 func (f *Forwarder) acceptLoop(ctx context.Context, ln net.Listener) {
 	defer f.wg.Done()
 	for {
@@ -185,6 +192,11 @@ func (f *Forwarder) acceptLoop(ctx context.Context, ln net.Listener) {
 			case <-time.After(100 * time.Millisecond):
 			}
 			continue
+		}
+		if tcp, ok := conn.(*net.TCPConn); ok {
+			_ = tcp.SetNoDelay(true)
+			_ = tcp.SetKeepAlive(true)
+			_ = tcp.SetKeepAlivePeriod(30 * time.Second)
 		}
 		f.mu.Lock()
 		if ctx.Err() != nil {
@@ -231,6 +243,11 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 		return
 	}
 	defer func() { _ = target.Close(); f.mu.Lock(); delete(f.conns, target); f.mu.Unlock() }()
+	if tcp, ok := target.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+		_ = tcp.SetKeepAlive(true)
+		_ = tcp.SetKeepAlivePeriod(30 * time.Second)
+	}
 	f.mu.Lock()
 	if ctx.Err() != nil {
 		f.mu.Unlock()
@@ -241,7 +258,9 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	f.mu.Unlock()
 	copied := make(chan struct{}, 2)
 	copyOne := func(dst, src net.Conn, counter *int64) {
-		_, copyErr := io.Copy(&countingWriter{w: dst, counter: counter}, src)
+		bufPtr := copyBufPool.Get().(*[]byte)
+		defer copyBufPool.Put(bufPtr)
+		_, copyErr := io.CopyBuffer(&countingWriter{w: dst, counter: counter}, src, *bufPtr)
 		if copyErr != nil {
 			_ = dst.Close()
 			_ = src.Close()

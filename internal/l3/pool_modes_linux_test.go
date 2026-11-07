@@ -13,7 +13,8 @@ func TestEverySmartModeGatesDataButKeepsControlAvailable(t *testing.T) {
 	for _, mode := range []string{"adaptive", "round_robin", "failover"} {
 		t.Run(mode, func(t *testing.T) {
 			pool, _ := confirmedPool(t, mode)
-			conn := &PacketConn{cfg: Config{PoolPolicy: PoolPolicy{Mode: mode}, AutoPeerSync: true}, pool: pool, closed: true}
+			conn := &PacketConn{cfg: Config{PoolPolicy: PoolPolicy{Mode: mode}, AutoPeerSync: true}, pool: pool}
+			conn.closed.Store(true)
 			if err := conn.SendData(nil); err == nil || !strings.Contains(err.Error(), "waiting for verified peer") {
 				t.Fatal("data sent before remote ready", err)
 			}
@@ -39,7 +40,8 @@ func TestEverySmartModeGatesDataButKeepsControlAvailable(t *testing.T) {
 			}
 		})
 	}
-	conn := &PacketConn{cfg: Config{PoolPolicy: PoolPolicy{Mode: "legacy"}, AutoPeerSync: true}, pool: NewSourcePool([]net.IP{net.ParseIP("192.0.2.1")}, PoolPolicy{Mode: "legacy"}), closed: true}
+	conn := &PacketConn{cfg: Config{PoolPolicy: PoolPolicy{Mode: "legacy"}, AutoPeerSync: true}, pool: NewSourcePool([]net.IP{net.ParseIP("192.0.2.1")}, PoolPolicy{Mode: "legacy"})}
+	conn.closed.Store(true)
 	if err := conn.SendData(nil); !errors.Is(err, net.ErrClosed) {
 		t.Fatal("legacy behavior silently changed", err)
 	}

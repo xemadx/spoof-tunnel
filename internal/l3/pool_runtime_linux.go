@@ -228,12 +228,13 @@ func (r *poolRuntime) requestPeer() {
 	r.requestStarted = time.Now()
 	r.requestToken = token
 	r.requestUntil = time.Now().Add(15 * time.Minute)
-	r.lastRequest = time.Time{}
+	r.lastRequest = time.Now()
 	r.rx = nil
 	r.view.Status = "waiting"
 	r.view.Error = ""
 	r.view.Progress = 0
 	r.mu.Unlock()
+	r.enqueue(poolMessage{Type: "request", Token: token})
 }
 func (r *poolRuntime) run(ctx context.Context) {
 	defer r.wg.Done()
@@ -294,8 +295,18 @@ func (r *poolRuntime) run(ctx context.Context) {
 				continue
 			default:
 			}
-			if m, ok := r.nextChunk(now); ok {
-				r.send(m)
+			// When chunks are ready to transfer, burst send up to 6 chunks per tick
+			// for fast real-time synchronization between both servers.
+			chunksSent := 0
+			for chunksSent < 6 {
+				if m, ok := r.nextChunk(now); ok {
+					r.send(m)
+					chunksSent++
+				} else {
+					break
+				}
+			}
+			if chunksSent > 0 {
 				continue
 			}
 			r.sendProbe(now)
@@ -341,18 +352,18 @@ func (r *poolRuntime) maintain(now time.Time) {
 			r.requestToken = ""
 			r.view.InFlight = false
 			r.rx = nil
-		} else if now.Sub(r.lastRequest) >= 5*time.Second && r.rx == nil {
+		} else if now.Sub(r.lastRequest) >= 3*time.Second && r.rx == nil {
 			r.enqueue(poolMessage{Type: "request", Token: r.requestToken})
 			r.lastRequest = now
 		}
 	}
-	if r.rx != nil && now.Sub(r.rx.lastFresh) >= 2*time.Second {
+	if r.rx != nil && now.Sub(r.rx.lastFresh) >= 500*time.Millisecond {
 		r.rx.lastFresh = now
 		missing := []uint16{}
 		for i, b := range r.rx.chunks {
 			if b == nil {
 				missing = append(missing, uint16(i))
-				if len(missing) == 32 {
+				if len(missing) == 64 {
 					break
 				}
 			}
@@ -361,7 +372,7 @@ func (r *poolRuntime) maintain(now time.Time) {
 			r.enqueue(poolMessage{Type: "need", Token: r.rx.token, Missing: missing})
 		}
 	}
-	if r.tx != nil && !r.tx.done && r.tx.next >= len(r.tx.chunks) && now.Sub(r.tx.lastRetry) >= 2*time.Second {
+	if r.tx != nil && !r.tx.done && r.tx.next >= len(r.tx.chunks) && now.Sub(r.tx.lastRetry) >= time.Second {
 		t := r.tx
 		i := len(t.chunks) - 1
 		if i >= 0 {
@@ -430,7 +441,7 @@ func (r *poolRuntime) receive(data []byte, observed string) {
 		if r.tx != nil && r.tx.token == m.Token {
 			return
 		}
-		if time.Since(r.lastServedRequest) < 5*time.Second {
+		if time.Since(r.lastServedRequest) < 1*time.Second {
 			return
 		}
 		chunks := make([][]byte, 0, (len(r.packed)+poolChunkBytes-1)/poolChunkBytes)
@@ -459,7 +470,7 @@ func (r *poolRuntime) receive(data []byte, observed string) {
 	case "need":
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if r.tx == nil || r.tx.token != m.Token || len(m.Missing) > 32 {
+		if r.tx == nil || r.tx.token != m.Token || len(m.Missing) > 64 {
 			return
 		}
 		for _, i := range m.Missing {
@@ -557,9 +568,7 @@ func (r *poolRuntime) admitPeer(values []string, revision string) {
 	for _, v := range values {
 		allowed[v] = true
 	}
-	r.conn.mu.Lock()
-	r.conn.peers = allowed
-	r.conn.mu.Unlock()
+	r.conn.setPeers(allowed)
 	r.peerSources = append([]string(nil), values...)
 	r.view.Count = len(values)
 	r.view.Revision = revision
@@ -622,8 +631,12 @@ func (r *poolRuntime) consumeBootstrap(b *PoolBootstrap) {
 	if !own || !peer {
 		return
 	}
-	if r.conn.pool.SeedVerified(net.ParseIP(b.Source), 2*time.Minute) {
-		log.Printf("pool bootstrap: benchmark-proven source %s pre-verified", b.Source)
+	ttl := time.Until(time.Unix(b.Expires, 0))
+	if ttl < 10*time.Minute {
+		ttl = 10 * time.Minute
+	}
+	if r.conn.pool.SeedVerified(net.ParseIP(b.Source), ttl) {
+		log.Printf("pool bootstrap: benchmark-proven source %s pre-verified for %v", b.Source, ttl)
 	}
 }
 

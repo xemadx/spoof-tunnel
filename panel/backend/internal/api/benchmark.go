@@ -304,7 +304,7 @@ func (b *benchChange) commit(source, peerSource string) error {
 	// the apply wait, which is what failed a proven pair. Best effort —
 	// a seed failure only falls back to normal probing.
 	if b.after.Engine == "tun" && source != "" && peerSource != "" {
-		if err := b.s.manager.SeedPoolBootstrap(b.after.ID, source, peerSource, b.after.SendTransport, b.after.RecvTransport, 5*time.Minute); err != nil {
+		if err := b.s.manager.SeedPoolBootstrap(b.after.ID, source, peerSource, b.after.SendTransport, b.after.RecvTransport, 15*time.Minute); err != nil {
 			log.Printf("benchmark seed failed for instance %d: %v", b.after.ID, err)
 		}
 	}

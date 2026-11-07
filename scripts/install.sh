@@ -101,7 +101,13 @@ spoof_tls_expiry_human() {
 spoof_resolve_domain() {
   local domain="$1" out=""
   if command -v getent >/dev/null; then
-    out=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -n 1)
+    out=$(getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | head -n 1)
+    if [[ -z "$out" ]]; then
+      out=$(getent hosts "$domain" 2>/dev/null | awk '{print $1}' | head -n 1)
+    fi
+  fi
+  if [[ -z "$out" ]] && command -v dig >/dev/null; then
+    out=$(dig +short A "$domain" 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
   fi
   if [[ -z "$out" ]] && command -v python3 >/dev/null; then
     out=$(python3 -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "$domain" 2>/dev/null || true)
@@ -162,11 +168,13 @@ spoof_ensure_certbot() {
   command -v certbot >/dev/null && return 0
   echo '  Installing certbot…'
   if command -v apt-get >/dev/null; then
-    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot || return 1
+    apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot ca-certificates curl || return 1
   elif command -v dnf >/dev/null; then
-    dnf install -y -q certbot || return 1
+    dnf install -y -q epel-release 2>/dev/null || true
+    dnf install -y -q certbot ca-certificates curl || return 1
   elif command -v yum >/dev/null; then
-    yum install -y -q certbot || return 1
+    yum install -y -q epel-release 2>/dev/null || true
+    yum install -y -q certbot ca-certificates curl || return 1
   else
     return 1
   fi
@@ -272,6 +280,13 @@ spoof_maybe_tls() {
   fi
   if ! spoof_port80_free; then
     echo '  ! Port 80 is already in use. certbot needs it free for the HTTP-01 challenge.'
+    local proc=""
+    if command -v ss >/dev/null; then
+      proc=$(ss -ltnp '( sport = :80 )' 2>/dev/null | grep -o 'users:(("[^"]*"' | head -n 1 | tr -d 'users:(("')
+    fi
+    if [[ -n "$proc" ]]; then
+      echo "    Process using port 80: $proc"
+    fi
     echo '    Stop whatever listens on port 80, then rerun the installer.'
     return 0
   fi
