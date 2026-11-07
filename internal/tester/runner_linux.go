@@ -89,7 +89,7 @@ func (r *Runner) doSend(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan stru
 	log.Printf("[tester-sender] protocol=%s dst=%s sources=%d packets_per_ip=%d",
 		cfg.Protocol, dstIP, total, packetCount)
 
-	pacer := newTokenPacer(500, 50)
+	pacer := newTokenPacer(50000, 10000)
 	var sent, errCount int64
 	var idx int
 	defer func() {

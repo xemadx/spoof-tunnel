@@ -60,17 +60,9 @@ func StartBackscatterSuppression(proto string, port int) *BackscatterSuppression
 
 	switch strings.ToLower(proto) {
 	case "icmp":
-		// 1. Sysctl: disable kernel ICMP echo responses
-		if data, err := os.ReadFile("/proc/sys/net/ipv4/icmp_echo_ignore_all"); err == nil {
-			val := strings.TrimSpace(string(data))
-			if val != "1" {
-				if err := os.WriteFile("/proc/sys/net/ipv4/icmp_echo_ignore_all", []byte("1\n"), 0644); err == nil {
-					s.sysctlRestore = val
-				}
-			}
-		}
-		// 2. Netfilter rule: drop outgoing echo-reply tagged with this PID
-		rule := []string{"-p", "icmp", "--icmp-type", "echo-reply", "-m", "comment", "--comment", fmt.Sprintf("spoof-tunnel-%d-icmp", pid), "-j", "DROP"}
+		// Drop outgoing ICMP echo-reply on non-TUN interfaces to suppress kernel backscatter
+		// for raw socket spoof frames, without blocking ping responses over TUN interfaces (sp+).
+		rule := []string{"!", "-o", "sp+", "-p", "icmp", "--icmp-type", "echo-reply", "-m", "comment", "--comment", fmt.Sprintf("spoof-tunnel-%d-icmp", pid), "-j", "DROP"}
 		s.addIptablesRule(rule)
 
 	case "tcp":
