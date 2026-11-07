@@ -362,7 +362,7 @@ const next = await api.testerStatus();
               </div>
             ) : (
               <label className="field">
-                <span>مسیر فایل روی سرور (مانند /opt/ips.txt)</span>
+                <span>مسیر فایل در پوشهٔ پنل (مانند sources.txt یا /etc/spoof-panel/sources.txt)</span>
                 <input
                   className="input mono"
                   dir="ltr"

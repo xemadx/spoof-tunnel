@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -204,6 +205,46 @@ func TestMaxConnectionsLimit(t *testing.T) {
 	b := make([]byte, 1)
 	if _, err := c2.Read(b); err == nil {
 		t.Fatalf("expected connection over limit to be rejected")
+	}
+}
+
+func TestIsReadyRejectsWhenPeerDisconnected(t *testing.T) {
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetLn.Close()
+
+	fwd := New("127.0.0.1:0", targetLn.Addr().String())
+	var ready atomic.Bool
+	fwd.IsReady = func() bool { return ready.Load() }
+	if err := fwd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer fwd.Stop()
+
+	// When IsReady returns false, connection should be closed immediately without dial
+	c, err := net.DialTimeout("tcp", fwd.BoundAddr(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	b := make([]byte, 1)
+	if _, err := c.Read(b); err == nil {
+		t.Fatalf("expected client to be closed when IsReady is false")
+	}
+
+	// When IsReady becomes true, dial should succeed
+	ready.Store(true)
+	c2, err := net.DialTimeout("tcp", fwd.BoundAddr(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial 2: %v", err)
+	}
+	defer c2.Close()
+	time.Sleep(50 * time.Millisecond)
+	if fwd.Stats().LastError != "" {
+		t.Fatalf("unexpected error when ready: %s", fwd.Stats().LastError)
 	}
 }
 

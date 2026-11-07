@@ -14,10 +14,10 @@ import (
 // the same GitHub release as the binaries, so anyone able to publish a
 // malicious release can publish matching checksums. Releases therefore
 // also carry SHA256SUMS.sig, an Ed25519 signature of the exact SHA256SUMS
-// bytes made with an offline key that never lives in this repository. The
-// public half is embedded below; the private seed is held by the release
-// operator as the GitHub Actions secret SPOOF_RELEASE_SIGNING_KEY and is
-// used only by the release workflow (see cmd/sign-release).
+// bytes. The private signing key never lives in this repository; it is
+// maintained by the release authority (either air-gapped using cmd/sign-release
+// or configured as a protected environment secret SPOOF_RELEASE_SIGNING_KEY
+// for automated release workflows). The public half is embedded below.
 //
 // Enforcement starts with minSignedVersion. Older releases predate signing
 // and are still accepted (their signature, if present, is verified); from

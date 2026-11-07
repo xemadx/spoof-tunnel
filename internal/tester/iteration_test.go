@@ -87,3 +87,34 @@ func TestIterateIPsFullIPv4CanBeCancelled(t *testing.T) {
 		t.Fatalf("cancelled after %d", count)
 	}
 }
+
+func TestParseIPListErrorsDoNotLeakContent(t *testing.T) {
+	sensitiveLines := []string{
+		"root:x:0:0:root:/root:/bin/bash",
+		"SECRET_TOKEN_VALUE/24",
+		"SUPER_SECRET_IP_1.2.3.4",
+		"PRIVATE_KEY_RANGE-9.9.9.9",
+	}
+	for _, line := range sensitiveLines {
+		_, err := ParseIPRangesFromString(line)
+		if err == nil {
+			t.Fatalf("expected error for line %q, got nil", line)
+		}
+		for _, token := range []string{"root", "/bin/bash", "SECRET_TOKEN_VALUE", "SUPER_SECRET", "PRIVATE_KEY"} {
+			if strings.Contains(err.Error(), token) {
+				t.Fatalf("error message leaked input content %q: %v", token, err)
+			}
+		}
+
+		_, errList := ParseIPListFromString(line)
+		if errList == nil {
+			t.Fatalf("expected ParseIPList error for line %q, got nil", line)
+		}
+		for _, token := range []string{"root", "/bin/bash", "SECRET_TOKEN_VALUE", "SUPER_SECRET", "PRIVATE_KEY"} {
+			if strings.Contains(errList.Error(), token) {
+				t.Fatalf("ParseIPList error message leaked input content %q: %v", token, errList)
+			}
+		}
+	}
+}
+

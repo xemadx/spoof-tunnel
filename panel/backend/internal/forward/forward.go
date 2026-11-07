@@ -52,6 +52,7 @@ type Forwarder struct {
 	BindInterface    string        // Set before Start; confines target dials to this TUN.
 	ListenAddr       string        // e.g. "0.0.0.0:443"
 	TargetAddr       string        // e.g. "10.77.0.2:443" (peer TUN IP + inbound port)
+	IsReady          func() bool   // Optional readiness check; if false, client connects are dropped immediately.
 
 	lifecycle sync.Mutex
 	cancel    context.CancelFunc
@@ -227,6 +228,14 @@ func (f *Forwarder) acceptLoop(ctx context.Context, ln net.Listener) {
 func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	defer f.wg.Done()
 	defer func() { _ = client.Close(); f.mu.Lock(); delete(f.conns, client); f.mu.Unlock() }()
+
+	if f.IsReady != nil && !f.IsReady() {
+		f.mu.Lock()
+		f.lastErr = "tunnel peer is disconnected"
+		f.mu.Unlock()
+		return
+	}
+
 	dialer := net.Dialer{Timeout: 10 * time.Second}
 	if f.BindInterface != "" {
 		timeout := f.ReadyTimeout
@@ -279,15 +288,33 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	}
 
 	copied := make(chan struct{}, 2)
+	var halfClosed atomic.Bool
+	var halfCloseDeadline time.Time
+	var hcMu sync.Mutex
+
 	copyOne := func(dst, src net.Conn, counter *int64) {
 		bufPtr := copyBufPool.Get().(*[]byte)
 		defer copyBufPool.Put(bufPtr)
 		buf := *bufPtr
 		for {
-			_ = src.SetReadDeadline(time.Now().Add(idle))
+			hcMu.Lock()
+			if halfClosed.Load() {
+				_ = src.SetReadDeadline(halfCloseDeadline)
+			} else {
+				_ = src.SetReadDeadline(time.Now().Add(idle))
+			}
+			hcMu.Unlock()
+
 			nr, rerr := src.Read(buf)
 			if nr > 0 {
-				_ = dst.SetWriteDeadline(time.Now().Add(idle))
+				hcMu.Lock()
+				if halfClosed.Load() {
+					_ = dst.SetWriteDeadline(halfCloseDeadline)
+				} else {
+					_ = dst.SetWriteDeadline(time.Now().Add(idle))
+				}
+				hcMu.Unlock()
+
 				nw, werr := dst.Write(buf[:nr])
 				if nw > 0 {
 					atomic.AddInt64(counter, int64(nw))
@@ -302,9 +329,9 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 				if rerr != io.EOF {
 					_ = dst.Close()
 					_ = src.Close()
-				} else if tcp, ok := dst.(*net.TCPConn); ok {
+				} else if cw, ok := dst.(interface{ CloseWrite() error }); ok {
 					// EOF finishes only this direction; the response may still be in flight.
-					_ = tcp.CloseWrite()
+					_ = cw.CloseWrite()
 				}
 				break
 			}
@@ -314,9 +341,15 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	go copyOne(target, client, &f.bytesUp)
 	go copyOne(client, target, &f.bytesDown)
 	<-copied
+
 	// Once one direction finishes, set generous half-close drain deadline on the remaining direction.
-	_ = client.SetDeadline(time.Now().Add(halfClose))
-	_ = target.SetDeadline(time.Now().Add(halfClose))
+	hcMu.Lock()
+	halfClosed.Store(true)
+	halfCloseDeadline = time.Now().Add(halfClose)
+	_ = client.SetDeadline(halfCloseDeadline)
+	_ = target.SetDeadline(halfCloseDeadline)
+	hcMu.Unlock()
+
 	<-copied
 }
 

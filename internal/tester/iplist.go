@@ -178,7 +178,7 @@ func parseLineToRange(line string) ([]IPRange, error) {
 func parseCIDRToRange(cidr string) ([]IPRange, error) {
 	ip, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid CIDR: %w", err)
+		return nil, fmt.Errorf("invalid CIDR format")
 	}
 	ip = ip.To4()
 	if ip == nil {
@@ -236,7 +236,7 @@ func parseLine(line string) ([]net.IP, error) {
 func parseCIDR(cidr string) ([]net.IP, error) {
 	ip, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid CIDR: %w", err)
+		return nil, fmt.Errorf("invalid CIDR format")
 	}
 	ip = ip.To4()
 	if ip == nil {

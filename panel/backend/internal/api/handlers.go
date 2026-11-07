@@ -22,7 +22,7 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-var dummyPasswordHash string
+var dummyPasswordHash = "$2a$10$wNnQ6e8j.7ZtBkJvGzP8n.J0D4e2bZq5cZ3hWk0gT4fVq8oM4e1Gq"
 
 func init() {
 	h, err := auth.HashPassword("dummy-mitigate-timing-attacks")
@@ -670,12 +670,20 @@ func (s *Server) handleTesterStart(c *gin.Context) {
 		if !filepath.IsAbs(cleanPath) {
 			cleanPath = filepath.Join(dataDir, cleanPath)
 		}
-		rel, errRel := filepath.Rel(dataDir, cleanPath)
-		if errRel != nil || strings.HasPrefix(rel, "..") || strings.Contains(cleanPath, "..") {
+		realDataDir, errRealDir := filepath.EvalSymlinks(dataDir)
+		if errRealDir != nil {
+			realDataDir = dataDir
+		}
+		realPath, errReal := filepath.EvalSymlinks(cleanPath)
+		if errReal != nil {
+			realPath = cleanPath
+		}
+		rel, errRel := filepath.Rel(realDataDir, realPath)
+		if errRel != nil || strings.HasPrefix(rel, "..") || rel == "." || strings.Contains(cleanPath, "..") {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "file_path must be located within the panel data directory"})
 			return
 		}
-		f, errFile := os.Open(cleanPath)
+		f, errFile := os.Open(realPath)
 		if errFile != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot open file path"})
 			return

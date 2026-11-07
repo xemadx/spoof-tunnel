@@ -201,6 +201,7 @@ function EditContent() {
         } catch {
           // ignore parsing error
         }
+        api.me().catch(() => {});
         setWsState("retry");
         timer = setTimeout(connect, 2500);
       };
