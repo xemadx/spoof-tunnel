@@ -85,6 +85,10 @@ func main() {
 		fmt.Println("TLS disabled; the panel will serve plain HTTP on next start")
 		return
 	}
+	if *tlsStatusFlag {
+		printTLSStatus(dataDir)
+		return
+	}
 
 	if *applyUpdate {
 		signalCtx, stopSignals := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -125,13 +129,6 @@ func main() {
 	database, err := db.InitDB(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to init database: %v", err)
-	}
-
-	// TLS status report for the installer: needs the database for the
-	// panel port and web path, so it runs after init and before serving.
-	if *tlsStatusFlag {
-		printTLSStatus(database, dataDir)
-		return
 	}
 
 	auth.SetSecret(getOrCreateSetting(database, "jwt_secret", func() string { return auth.GenerateRandomString(64) }))
@@ -599,16 +596,22 @@ func runSetTLS(dataDir, domain, certFile, keyFile string) {
 // printTLSStatus reports the TLS state as key=value lines for the
 // installer: enabled/domain/cert/key/valid/error/expires plus the panel
 // port and web path, so the installer can verify the HTTPS endpoint
-// without parsing anything else.
-func printTLSStatus(database *gorm.DB, dataDir string) {
+// without parsing anything else. It reads credentials.txt directly
+// and never touches the database, avoiding locks when the panel service is running.
+func printTLSStatus(dataDir string) {
 	st := tlsconf.Evaluate(dataDir)
 	var port, prefix string
-	var s db.Setting
-	if err := database.Where("key = ?", "panel_port").First(&s).Error; err == nil {
-		port = s.Value
-	}
-	if err := database.Where("key = ?", "web_path").First(&s).Error; err == nil {
-		prefix = s.Value
+	credsPath := filepath.Join(dataDir, "credentials.txt")
+	if data, err := os.ReadFile(credsPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "Port:") {
+				port = strings.TrimSpace(strings.TrimPrefix(line, "Port:"))
+			}
+			if strings.HasPrefix(line, "Web Path:") {
+				prefix = strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "Web Path:")), "/")
+			}
+		}
 	}
 	expires := ""
 	expiresUnix := ""

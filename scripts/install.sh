@@ -66,14 +66,23 @@ spoof_tls_setup_url() {
 spoof_tls_verify() {
   local domain="$1" port="$2" prefix="${3#/}" body code attempt log
   prefix="${prefix%/}"
-  [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 && -n "$prefix" ]] || { echo '  ! Invalid local HTTPS health address.'; return 1; }
+  if [[ -z "$port" || -z "$prefix" ]]; then
+    local creds="${SPOOF_DATA_DIR:-/etc/spoof-panel}/credentials.txt"
+    if [[ -f "$creds" ]]; then
+      [[ -z "$port" ]] && port=$(grep -m1 '^Port:' "$creds" | awk '{print $2}' | tr -d '\r\n')
+      [[ -z "$prefix" ]] && prefix=$(grep -m1 '^Web Path:' "$creds" | awk '{print $NF}' | tr -d '\r\n')
+      prefix="${prefix#/}"
+      prefix="${prefix%/}"
+    fi
+  fi
+  [[ "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 && -n "$prefix" ]] || { echo "  ! Invalid local HTTPS health address (port='$port', prefix='$prefix')."; return 1; }
   log=$(mktemp) || return 1
   local deadline=$((SECONDS + 45))
   # systemd Type=simple becomes active before database/tunnel startup completes.
   # Wait for the actual trusted HTTPS endpoint, not merely an active process.
   for attempt in $(seq 1 30); do
     code=0
-    body=$(curl -q -4 --noproxy '*' --resolve "$domain:$port:127.0.0.1" -fsS --connect-timeout 1 --max-time 3 "https://$domain:$port/$prefix/api/health" 2>"$log") || code=$?
+    body=$(curl -q -4 --noproxy '*' --resolve "$domain:$port:127.0.0.1" -fsS --connect-timeout 2 --max-time 5 "https://$domain:$port/$prefix/api/health" 2>"$log") || code=$?
     if [[ "$code" == 0 && "$body" =~ ^[[:space:]]*\{[[:space:]]*\"version\"[[:space:]]*:[[:space:]]*\"[^\"]+\"[[:space:]]*\}[[:space:]]*$ ]]; then
       rm -f "$log"; return 0
     fi
@@ -86,9 +95,33 @@ spoof_tls_verify() {
     sleep 1
   done
   echo "  ! Local HTTPS health check failed (curl exit $code)."
-  [[ "$code" == 0 ]] && echo '    Expected a JSON version response from the panel health endpoint.'
+  [[ "$code" == 0 ]] && echo '    Expected a JSON response from the panel health endpoint.'
   sed -n '1,4s/^/    /p' "$log"
   rm -f "$log"
+  return 1
+}
+
+spoof_find_existing_cert() {
+  local d="$1" item cert key
+  local c_paths=(
+    "/etc/letsencrypt/live/$d/fullchain.pem:/etc/letsencrypt/live/$d/privkey.pem"
+    "$HOME/.acme.sh/${d}_ecc/fullchain.cer:$HOME/.acme.sh/${d}_ecc/${d}.key"
+    "$HOME/.acme.sh/$d/fullchain.cer:$HOME/.acme.sh/$d/${d}.key"
+    "/root/.acme.sh/${d}_ecc/fullchain.cer:/root/.acme.sh/${d}_ecc/${d}.key"
+    "/root/.acme.sh/$d/fullchain.cer:/root/.acme.sh/$d/${d}.key"
+    "/etc/ssl/certs/$d.crt:/etc/ssl/private/$d.key"
+    "/etc/ssl/certs/$d.pem:/etc/ssl/private/$d.key"
+  )
+  for item in "${c_paths[@]}"; do
+    cert="${item%%:*}"
+    key="${item##*:}"
+    if [[ -f "$cert" && -f "$key" ]]; then
+      if openssl x509 -checkend 86400 -noout -in "$cert" >/dev/null 2>&1; then
+        echo "$cert:$key"
+        return 0
+      fi
+    fi
+  done
   return 1
 }
 
@@ -278,39 +311,50 @@ spoof_maybe_tls() {
       *) echo '  Keeping plain HTTP. Point the domain at this server, then rerun the installer.'; return 0 ;;
     esac
   fi
-  if ! spoof_port80_free; then
-    echo '  ! Port 80 is already in use. certbot needs it free for the HTTP-01 challenge.'
-    local proc=""
-    if command -v ss >/dev/null; then
-      proc=$(ss -ltnp '( sport = :80 )' 2>/dev/null | grep -o 'users:(("[^"]*"' | head -n 1 | tr -d 'users:(("')
+  # Check if a valid certificate for this domain already exists (e.g. from previous run, certbot, acme.sh, or ESSL)
+  local existing_pair="" cert_path="" key_path=""
+  existing_pair=$(spoof_find_existing_cert "$domain" 2>/dev/null || true)
+  if [[ -n "$existing_pair" ]]; then
+    cert_path="${existing_pair%%:*}"
+    key_path="${existing_pair##*:}"
+    echo "  Found existing valid certificate for $domain ($cert_path)"
+  else
+    if ! spoof_port80_free; then
+      echo '  ! Port 80 is already in use. certbot needs it free for the HTTP-01 challenge.'
+      local proc=""
+      if command -v ss >/dev/null; then
+        proc=$(ss -ltnp '( sport = :80 )' 2>/dev/null | grep -o 'users:(("[^"]*"' | head -n 1 | tr -d 'users:(("')
+      fi
+      if [[ -n "$proc" ]]; then
+        echo "    Process using port 80: $proc"
+      fi
+      echo '    Stop whatever listens on port 80, then rerun the installer (or use ESSL/acme.sh first).'
+      return 0
     fi
-    if [[ -n "$proc" ]]; then
-      echo "    Process using port 80: $proc"
+    if ! spoof_ensure_certbot; then
+      echo '  ! certbot could not be installed (no apt/dnf/yum, or the install failed).'
+      echo '    Install certbot or obtain a certificate with ESSL/acme.sh manually, then rerun the installer.'
+      return 0
     fi
-    echo '    Stop whatever listens on port 80, then rerun the installer.'
-    return 0
-  fi
-  if ! spoof_ensure_certbot; then
-    echo '  ! certbot could not be installed (no apt/dnf/yum, or the install failed).'
-    echo '    Install certbot manually, then rerun the installer.'
-    return 0
-  fi
 
-  echo "  Requesting a certificate for $domain (Let's Encrypt)…"
-  local cert_log
-  cert_log=$(mktemp)
-  if ! certbot certonly --standalone --non-interactive --agree-tos --register-unsafely-without-email --preferred-challenges http -d "$domain" >"$cert_log" 2>&1; then
-    echo '  ! certbot could not issue a certificate:'
-    tail -n 20 "$cert_log" | sed 's/^/    /'
+    echo "  Requesting a certificate for $domain (Let's Encrypt)…"
+    local cert_log
+    cert_log=$(mktemp)
+    if ! certbot certonly --standalone --non-interactive --agree-tos --register-unsafely-without-email --preferred-challenges http -d "$domain" >"$cert_log" 2>&1; then
+      echo '  ! certbot could not issue a certificate:'
+      tail -n 20 "$cert_log" | sed 's/^/    /'
+      rm -f "$cert_log"
+      echo '  Panel stays on plain HTTP. Fix the problem above and rerun the installer.'
+      return 0
+    fi
     rm -f "$cert_log"
-    echo '  Panel stays on plain HTTP. Fix the problem above and rerun the installer.'
-    return 0
+    cert_path="/etc/letsencrypt/live/$domain/fullchain.pem"
+    key_path="/etc/letsencrypt/live/$domain/privkey.pem"
   fi
-  rm -f "$cert_log"
 
   # --set-tls validates the pair (loads, key matches, in date, SAN covers
   # the domain) and writes tls.json; a rejected pair aborts here.
-  if ! SPOOF_DATA_DIR="${SPOOF_DATA_DIR:-/etc/spoof-panel}" "${SPOOF_PANEL_BIN:-/opt/spoof-panel/spoof-panel}" --set-tls --tls-domain "$domain" --tls-cert "/etc/letsencrypt/live/$domain/fullchain.pem" --tls-key "/etc/letsencrypt/live/$domain/privkey.pem"; then
+  if ! SPOOF_DATA_DIR="${SPOOF_DATA_DIR:-/etc/spoof-panel}" "${SPOOF_PANEL_BIN:-/opt/spoof-panel/spoof-panel}" --set-tls --tls-domain "$domain" --tls-cert "$cert_path" --tls-key "$key_path"; then
     echo '  ! The issued certificate was rejected by the panel; staying on HTTP.'
     return 0
   fi
@@ -334,6 +378,15 @@ spoof_maybe_tls() {
   status=$(spoof_tls_status)
   port=$(spoof_tls_val port "$status")
   prefix=$(spoof_tls_val web_path "$status")
+  if [[ -z "$port" || -z "$prefix" ]]; then
+    local creds="${SPOOF_DATA_DIR:-/etc/spoof-panel}/credentials.txt"
+    if [[ -f "$creds" ]]; then
+      [[ -z "$port" ]] && port=$(grep -m1 '^Port:' "$creds" | awk '{print $2}' | tr -d '\r\n')
+      [[ -z "$prefix" ]] && prefix=$(grep -m1 '^Web Path:' "$creds" | awk '{print $NF}' | tr -d '\r\n')
+      prefix="${prefix#/}"
+      prefix="${prefix%/}"
+    fi
+  fi
   if ! spoof_tls_verify "$domain" "$port" "$prefix"; then
     echo '  ! HTTPS verification failed; disabling TLS and keeping the panel on HTTP.'
     SPOOF_DATA_DIR="${SPOOF_DATA_DIR:-/etc/spoof-panel}" "${SPOOF_PANEL_BIN:-/opt/spoof-panel/spoof-panel}" --disable-tls
@@ -342,7 +395,7 @@ spoof_maybe_tls() {
   fi
 
   local expiry
-  expiry=$(openssl x509 -in "/etc/letsencrypt/live/$domain/fullchain.pem" -noout -enddate 2>/dev/null | cut -d= -f2-)
+  expiry=$(openssl x509 -in "$cert_path" -noout -enddate 2>/dev/null | cut -d= -f2-)
   spoof_tls_publish_url "$domain" "$port" "$prefix" || echo '  ! Could not refresh the saved panel URL.'
   SPOOF_TLS_ON=1
   echo ''

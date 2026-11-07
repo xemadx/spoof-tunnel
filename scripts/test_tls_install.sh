@@ -130,6 +130,9 @@ exit 0
 SHIM
   cat > "$bin/openssl" <<'SHIM'
 #!/usr/bin/env bash
+if [[ "$*" == *-checkend* ]]; then
+  exit 0
+fi
 if [[ "$*" == *-enddate* ]]; then
   printf 'notAfter=Feb  4 12:00:00 2027 GMT\n'
   exit 0
@@ -438,6 +441,17 @@ check_scenario_19() {
   check 'scenario 19: no insecure certificate bypass' not_contains "$2" 'curl -k'
   check 'scenario 19: invalid trusted TLS rolls back' contains "$1/out.txt" 'enabled=0'
 }
+scenario_20_setup() {
+  scenario_1_setup "$1"
+  mkdir -p "$HOME/.acme.sh/${DOMAIN}_ecc"
+  touch "$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer" "$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
+}
+check_scenario_20() {
+  check 'scenario 20: detects pre-existing acme.sh / ESSL certificate' contains "$1/out.txt" 'Found existing valid certificate'
+  check 'scenario 20: does not call certbot when existing certificate is found' not_contains "$2" 'certbot certonly'
+  check 'scenario 20: enables HTTPS with existing certificate' contains "$1/out.txt" '✓ HTTPS enabled'
+  rm -rf "$HOME/.acme.sh/${DOMAIN}_ecc"
+}
 
 run_case "scenario_1" scenario_1_setup
 run_case "scenario_2" scenario_2_setup
@@ -458,6 +472,7 @@ run_case "scenario_16" scenario_16_setup
 run_case "scenario_17" scenario_17_setup
 run_case "scenario_18" scenario_18_setup
 run_case "scenario_19" scenario_19_setup
+run_case "scenario_20" scenario_20_setup
 
 
 echo ""
