@@ -280,7 +280,7 @@ function EditContent() {
         <div>
           <div className="eyebrow">CONNECTION / SETTINGS</div>
           <div className="row">
-            <h1>{String(config.name || "اتصال")}</h1>
+            <h1><bdi dir="auto">{String(config.name || "اتصال")}</bdi></h1>
             <span className={`pill ${status}`}>{STATUS[status] || status}</span>
           </div>
           <p className="page-intro">

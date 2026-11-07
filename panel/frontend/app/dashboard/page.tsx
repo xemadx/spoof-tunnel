@@ -341,10 +341,10 @@ export default function Dashboard() {
                   return (
                     <tr key={i.id}>
                       <td>
-                        <Link className="row-link" href={base + `/dashboard/tunnels/edit?id=${i.id}`}>{i.name}</Link>
-                        <div className="sub">
-                          <span className={`mode-badge ${i.mode}`}>{i.mode === "local" ? "ایران · local" : "خارج · remote"}</span>
-                          <span className="mono" style={{ color: "var(--accent-cyan)" }}>{i.engine === "tun" ? "TUN L3" : "UDP Relay"}</span>
+                        <Link className="row-link" href={base + `/dashboard/tunnels/edit?id=${i.id}`}><bdi dir="auto">{i.name}</bdi></Link>
+                        <div className="tunnel-tags">
+                          <span className={`mode-badge ${i.mode}`}><bdi>{i.mode === "local" ? "سرور ایران" : "سرور خارج"}</bdi><span className="mode-sub mono" dir="ltr">({i.mode})</span></span>
+                          <span className="engine-badge mono" dir="ltr">{i.engine === "tun" ? "TUN L3" : "UDP Relay"}</span>
                         </div>
                       </td>
                       <td>

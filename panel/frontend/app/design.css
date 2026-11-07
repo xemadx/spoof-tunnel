@@ -376,8 +376,51 @@ select.input { appearance: none; cursor: pointer; }
 .badge-socks { background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent-hover); }
 .badge-relay { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
 .badge-forward { background: color-mix(in srgb, var(--warning) 14%, transparent); color: var(--warning); }
-.mode-badge { padding: 2px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-hover); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); }
-.mode-badge.remote { background: color-mix(in srgb, var(--accent-2) 12%, transparent); color: var(--accent-2); border-color: color-mix(in srgb, var(--accent-2) 30%, var(--border)); }
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-hover);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+.mode-badge.remote {
+  background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+  color: var(--accent-2);
+  border-color: color-mix(in srgb, var(--accent-2) 30%, var(--border));
+}
+.mode-badge .mode-sub {
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.85;
+  letter-spacing: 0.02em;
+}
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--accent-cyan) 12%, transparent);
+  color: var(--accent-cyan);
+  border: 1px solid color-mix(in srgb, var(--accent-cyan) 30%, var(--border));
+}
+.tunnel-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  flex-wrap: wrap;
+}
 .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 .status-dot.running, .status-dot.ok { background: var(--success); box-shadow: 0 0 8px var(--success); }
 .status-dot.stopped, .status-dot.error { background: var(--danger); }
