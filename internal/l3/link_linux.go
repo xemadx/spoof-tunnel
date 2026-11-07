@@ -353,6 +353,8 @@ func Run(ctx context.Context, c Config) error {
 		return err
 	}
 	defer conn.Close()
+	suppression := StartBackscatterSuppression(c.Receive, c.ReceivePort)
+	defer suppression.Stop()
 	tun, err := openTun(c)
 	if err != nil {
 		return err

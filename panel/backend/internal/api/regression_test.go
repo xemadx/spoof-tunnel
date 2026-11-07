@@ -115,3 +115,79 @@ func TestTesterStatusIncludesSenderCounters(t *testing.T) {
 		}
 	}
 }
+
+func TestTesterStartDestinationAndFileRestrictions(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.InitDB(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d, _ := database.DB(); d.Close() }()
+	user := db.User{Username: "admin", PasswordHash: "unused"}
+	database.Create(&user)
+	token, _ := auth.GenerateToken(user.ID, user.Username)
+	server := NewServer(database, manager.NewManager(database, "unused", dir), "/prefix", "test")
+	defer server.Close()
+
+	// 1. Arbitrary file_path outside dataDir must be rejected
+	reqBody := `{"mode":"receiver","protocol":"icmp","file_path":"/etc/shadow","timeout":10,"packet_count":10,"max_packet_loss":0}`
+	req := httptest.NewRequest("POST", "/prefix/api/tester/start", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.Router().ServeHTTP(w, req)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "panel data directory") {
+		t.Fatalf("expected rejection of /etc/shadow, got code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// 2. Unconfigured public dst_ip in sender mode must be rejected
+	reqBody = `{"mode":"sender","test_id":"0123456789abcdef0123456789abcdef","protocol":"icmp","dst_ip":"8.8.8.8","ip_list":"1.1.1.1","timeout":10,"packet_count":10,"max_packet_loss":0}`
+	req = httptest.NewRequest("POST", "/prefix/api/tester/start", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Router().ServeHTTP(w, req)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "configured tunnel peer or local test target") {
+		t.Fatalf("expected rejection of unconfigured public dst_ip, got code=%d body=%s", w.Code, w.Body.String())
+	}
+
+	// 3. Local test target (loopback 127.0.0.1) must be allowed
+	reqBody = `{"mode":"sender","test_id":"0123456789abcdef0123456789abcdef","protocol":"icmp","dst_ip":"127.0.0.1","ip_list":"1.1.1.1","timeout":10,"packet_count":10,"max_packet_loss":0}`
+	req = httptest.NewRequest("POST", "/prefix/api/tester/start", strings.NewReader(reqBody))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	server.Router().ServeHTTP(w, req)
+	if strings.Contains(w.Body.String(), "dst_ip must be a configured tunnel peer") {
+		t.Fatalf("expected loopback dst_ip to be allowed, got body=%s", w.Body.String())
+	}
+}
+
+func TestLoginTimingAttackMitigation(t *testing.T) {
+	dir := t.TempDir()
+	database, err := db.InitDB(filepath.Join(dir, "panel.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { d, _ := database.DB(); d.Close() }()
+	hash, err := auth.HashPassword("correctpassword123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.Create(&db.User{Username: "realadmin", PasswordHash: hash})
+	server := NewServer(database, manager.NewManager(database, "unused", dir), "/prefix", "test")
+	defer server.Close()
+
+	// Both invalid username and valid username with wrong password must return 401
+	for _, uname := range []string{"nonexistentuser", "realadmin"} {
+		body := `{"username":"` + uname + `","password":"wrongpassword"}`
+		req := httptest.NewRequest("POST", "/prefix/api/auth/login", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		server.Router().ServeHTTP(w, req)
+		if w.Code != 401 {
+			t.Fatalf("expected 401 for %s, got %d", uname, w.Code)
+		}
+	}
+}
+

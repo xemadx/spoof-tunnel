@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,6 +21,15 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+var dummyPasswordHash string
+
+func init() {
+	h, err := auth.HashPassword("dummy-mitigate-timing-attacks")
+	if err == nil {
+		dummyPasswordHash = h
+	}
+}
 
 // ── Auth Handlers ──
 
@@ -67,12 +77,13 @@ func (s *Server) handleLogin(c *gin.Context) {
 	}
 
 	var user db.User
-	if err := s.db.Where("username = ?", req.Username).First(&user).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-		return
+	userFound := s.db.Where("username = ?", req.Username).First(&user).Error == nil
+	hashToCheck := user.PasswordHash
+	if !userFound || hashToCheck == "" {
+		hashToCheck = dummyPasswordHash
 	}
-
-	if !auth.CheckPassword(req.Password, user.PasswordHash) {
+	passOk := auth.CheckPassword(req.Password, hashToCheck)
+	if !userFound || !passOk {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
@@ -647,9 +658,26 @@ func (s *Server) handleTesterStart(c *gin.Context) {
 	var err error
 
 	if req.FilePath != "" {
-		f, errFile := os.Open(req.FilePath)
+		dataDir := ""
+		if s.manager != nil {
+			dataDir = s.manager.DataDir()
+		}
+		if dataDir == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "file_path is disabled (no data directory configured)"})
+			return
+		}
+		cleanPath := filepath.Clean(req.FilePath)
+		if !filepath.IsAbs(cleanPath) {
+			cleanPath = filepath.Join(dataDir, cleanPath)
+		}
+		rel, errRel := filepath.Rel(dataDir, cleanPath)
+		if errRel != nil || strings.HasPrefix(rel, "..") || strings.Contains(cleanPath, "..") {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "file_path must be located within the panel data directory"})
+			return
+		}
+		f, errFile := os.Open(cleanPath)
 		if errFile != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot open file path: " + errFile.Error()})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot open file path"})
 			return
 		}
 		defer f.Close()
@@ -671,6 +699,12 @@ func (s *Server) handleTesterStart(c *gin.Context) {
 		return
 	}
 
+	maxTotalPackets := int64(100000)
+	if ranges.Total() > 50000 || ranges.Total()*int64(req.PacketCount) > maxTotalPackets {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("total packet budget exceeded (max %d packets across at most 50,000 IPs)", maxTotalPackets)})
+		return
+	}
+
 	// Validate synchronously here, not inside the background goroutine:
 	// without this, a sender with an unknown protocol silently finished
 	// with zero packets sent, and an invalid destination only surfaced
@@ -680,9 +714,50 @@ func (s *Server) handleTesterStart(c *gin.Context) {
 		return
 	}
 	if req.Mode == "sender" {
-		ip := net.ParseIP(req.DstIP)
-		if ip == nil || ip.To4() == nil {
+		parsedDst := net.ParseIP(req.DstIP)
+		if parsedDst == nil || parsedDst.To4() == nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "dst_ip must be a valid IPv4 address"})
+			return
+		}
+		allowed := false
+		if parsedDst.IsLoopback() {
+			allowed = true
+		}
+		if !allowed {
+			if addrs, errAddrs := net.InterfaceAddrs(); errAddrs == nil {
+				for _, addr := range addrs {
+					if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.To4() != nil && ipNet.IP.Equal(parsedDst) {
+						allowed = true
+						break
+					}
+				}
+			}
+		}
+		if !allowed {
+			var instances []db.TunnelInstance
+			if errInst := s.db.Find(&instances).Error; errInst == nil {
+				for _, inst := range instances {
+					for _, candidate := range []string{inst.RemoteAddr, inst.ClientIP, inst.LocalIP} {
+						if candidate == "" {
+							continue
+						}
+						host, _, errSplit := net.SplitHostPort(candidate)
+						if errSplit != nil {
+							host = candidate
+						}
+						if pip := net.ParseIP(host); pip != nil && pip.Equal(parsedDst) {
+							allowed = true
+							break
+						}
+					}
+					if allowed {
+						break
+					}
+				}
+			}
+		}
+		if !allowed {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "dst_ip must be a configured tunnel peer or local test target"})
 			return
 		}
 	}

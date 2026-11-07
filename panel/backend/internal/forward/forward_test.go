@@ -155,3 +155,55 @@ func TestDialFailureClosesClient(t *testing.T) {
 		t.Fatalf("expected LastError to be recorded, got empty")
 	}
 }
+
+func TestMaxConnectionsLimit(t *testing.T) {
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetLn.Close()
+	go func() {
+		for {
+			c, err := targetLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				buf := make([]byte, 1024)
+				for {
+					if _, err := conn.Read(buf); err != nil {
+						return
+					}
+				}
+			}(c)
+		}
+	}()
+
+	fwd := New("127.0.0.1:0", targetLn.Addr().String())
+	fwd.MaxConnections = 1
+	if err := fwd.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer fwd.Stop()
+
+	c1, err := net.DialTimeout("tcp", fwd.BoundAddr(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial 1: %v", err)
+	}
+	defer c1.Close()
+	time.Sleep(100 * time.Millisecond)
+
+	// Second connection should be immediately closed because MaxConnections=1
+	c2, err := net.DialTimeout("tcp", fwd.BoundAddr(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial 2: %v", err)
+	}
+	defer c2.Close()
+	_ = c2.SetReadDeadline(time.Now().Add(2 * time.Second))
+	b := make([]byte, 1)
+	if _, err := c2.Read(b); err == nil {
+		t.Fatalf("expected connection over limit to be rejected")
+	}
+}
+

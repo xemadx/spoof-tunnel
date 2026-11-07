@@ -7,6 +7,7 @@ import (
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/tlsconf"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/updater"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -49,7 +50,18 @@ type Server struct {
 func NewServer(database *gorm.DB, mgr *manager.Manager, webPath string, version string) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	_ = r.SetTrustedProxies(nil)
+	trustedProxies := []string{"127.0.0.1", "::1"}
+	if envProxies := os.Getenv("TRUSTED_PROXIES"); envProxies != "" {
+		parts := strings.Split(envProxies, ",")
+		trustedProxies = nil
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				trustedProxies = append(trustedProxies, p)
+			}
+		}
+	}
+	_ = r.SetTrustedProxies(trustedProxies)
 	r.Use(gin.Recovery())
 
 	r.Use(func(c *gin.Context) {
@@ -61,6 +73,10 @@ func NewServer(database *gorm.DB, mgr *manager.Manager, webPath string, version 
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("Referrer-Policy", "no-referrer")
 		c.Header("X-Frame-Options", "DENY")
+		c.Header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'")
+		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		c.Next()
 	})
 

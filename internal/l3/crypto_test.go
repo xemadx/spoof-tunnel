@@ -112,3 +112,19 @@ func TestConfigValidation(t *testing.T) {
 		t.Fatal("accepted MTU > 1300")
 	}
 }
+
+func TestReplayFilterRejectsFramesBeforeStartup(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	a, _ := NewCodec(key, "local")
+	// Old frame sealed now
+	frame := a.Seal(1, []byte("in-flight packet"))
+
+	// Simulate a receiver restarting 15 seconds after the frame was created
+	b, _ := NewCodec(key, "remote")
+	b.startTime += 15 // simulate future start time relative to frame timestamp
+
+	if _, _, err := b.Open(frame); err == nil {
+		t.Fatal("accepted frame from before receiver process start time")
+	}
+}
+

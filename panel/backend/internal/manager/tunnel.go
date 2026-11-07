@@ -768,6 +768,7 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 			message := inst.error
 			inst.mu.Unlock()
 			streamLogs(inst, strings.NewReader("[supervisor] "+message+"\n"))
+			go m.slowRecoveryRetry(inst, epoch, cancel)
 			return
 		}
 		number := inst.retryCount + 1
@@ -829,6 +830,57 @@ func (m *Manager) recoverInstance(inst *Instance, epoch uint64) {
 			return
 		}
 		log.Printf("[manager] instance %d recovery failed: %v", inst.ID, err)
+	}
+}
+
+func (m *Manager) slowRecoveryRetry(inst *Instance, epoch uint64, cancel chan struct{}) {
+	slowTimer := time.NewTimer(5 * time.Minute)
+	defer slowTimer.Stop()
+	select {
+	case <-cancel:
+		return
+	case <-slowTimer.C:
+	}
+
+	m.mu.RLock()
+	guard := m.mutationGuard
+	m.mu.RUnlock()
+	if guard != nil {
+		guard.Lock()
+		defer guard.Unlock()
+	}
+
+	inst.actionMu.Lock()
+	defer inst.actionMu.Unlock()
+	inst.mu.Lock()
+	if inst.epoch != epoch || inst.cmd != nil {
+		inst.mu.Unlock()
+		return
+	}
+	inst.wanted = true
+	inst.recovering = true
+	inst.retryCount = maxRecoveryAttempts - 1
+	inst.retryExhausted = false
+	inst.mu.Unlock()
+
+	streamLogs(inst, strings.NewReader("[supervisor] attempting slow periodic recovery\n"))
+	if err := m.startInstance(inst.ID); err == nil {
+		m.StartForwarders(inst.ID)
+		inst.mu.Lock()
+		if inst.epoch == epoch {
+			inst.recovering = false
+			inst.retryCount = 0
+		}
+		inst.mu.Unlock()
+	} else {
+		inst.mu.Lock()
+		if inst.epoch == epoch {
+			inst.wanted = false
+			inst.recovering = false
+			inst.retryExhausted = true
+		}
+		inst.mu.Unlock()
+		go m.slowRecoveryRetry(inst, epoch, cancel)
 	}
 }
 

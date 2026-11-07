@@ -31,6 +31,7 @@ type replay struct {
 	aead  cipher.AEAD
 }
 type Codec struct {
+	startTime int64
 	mu      sync.RWMutex
 	tx, rx  []byte
 	txAEAD  cipher.AEAD
@@ -63,7 +64,7 @@ func NewCodec(psk, role string) (*Codec, error) {
 	if role == "remote" {
 		a, b = b, a
 	}
-	c := &Codec{tx: derive(key, a), rx: derive(key, b), peers: make(map[[16]byte]*replay)}
+	c := &Codec{startTime: time.Now().Unix(), tx: derive(key, a), rx: derive(key, b), peers: make(map[[16]byte]*replay)}
 	if _, err = rand.Read(c.session[:]); err != nil {
 		return nil, err
 	}
@@ -119,6 +120,9 @@ func (c *Codec) Open(frame []byte) (byte, []byte, error) {
 
 	if stamp < now-120 || stamp > now+30 {
 		return 0, nil, &ClockSkewError{Stamp: stamp, Now: now}
+	}
+	if stamp < c.startTime-10 {
+		return 0, nil, errFrame
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

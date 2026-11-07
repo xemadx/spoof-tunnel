@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -136,17 +137,15 @@ func (r *poolRuntime) start(parent context.Context) error {
 			}
 			_ = os.Remove(path)
 		}
+		oldUmask := syscall.Umask(0077)
 		ln, err := net.Listen("unix", path)
+		syscall.Umask(oldUmask)
 		if err != nil {
 			cancel()
 			return err
 		}
 		r.listener = ln
-		if err = os.Chmod(path, 0600); err != nil {
-			ln.Close()
-			cancel()
-			return err
-		}
+		_ = os.Chmod(path, 0600)
 		r.wg.Add(1)
 		go r.serve(ctx)
 	}

@@ -9,7 +9,57 @@ import (
 	"net"
 	"syscall"
 	"time"
+
+	"github.com/ParsaKSH/spoof-tunnel/internal/l3"
 )
+
+type tokenPacer struct {
+	rate       float64
+	capacity   float64
+	tokens     float64
+	lastRefill time.Time
+}
+
+func newTokenPacer(rate, capacity float64) *tokenPacer {
+	return &tokenPacer{
+		rate:       rate,
+		capacity:   capacity,
+		tokens:     capacity,
+		lastRefill: time.Now(),
+	}
+}
+
+func (p *tokenPacer) wait(cancel <-chan struct{}) bool {
+	for {
+		select {
+		case <-cancel:
+			return false
+		default:
+		}
+		now := time.Now()
+		elapsed := now.Sub(p.lastRefill).Seconds()
+		p.tokens += elapsed * p.rate
+		if p.tokens > p.capacity {
+			p.tokens = p.capacity
+		}
+		p.lastRefill = now
+
+		if p.tokens >= 1.0 {
+			p.tokens -= 1.0
+			return true
+		}
+		needed := (1.0 - p.tokens) / p.rate
+		sleepDur := time.Duration(needed * float64(time.Second))
+		if sleepDur < time.Millisecond {
+			sleepDur = time.Millisecond
+		}
+		select {
+		case <-cancel:
+			return false
+		case <-time.After(sleepDur):
+		}
+	}
+}
 
 func (r *Runner) doSend(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan struct{}) error {
 	dstIP := net.ParseIP(cfg.DstIP).To4()
@@ -39,6 +89,7 @@ func (r *Runner) doSend(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan stru
 	log.Printf("[tester-sender] protocol=%s dst=%s sources=%d packets_per_ip=%d",
 		cfg.Protocol, dstIP, total, packetCount)
 
+	pacer := newTokenPacer(500, 50)
 	var sent, errCount int64
 	var idx int
 	defer func() {
@@ -57,10 +108,8 @@ func (r *Runner) doSend(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan stru
 		}
 
 		for p := 0; p < packetCount; p++ {
-			select {
-			case <-cancel:
+			if !pacer.wait(cancel) {
 				return false
-			default:
 			}
 			pkt := buildProbe(cfg, srcIP, dstIP, uint32(p))
 
@@ -98,6 +147,13 @@ func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan s
 			ready <- err
 		}
 	}()
+	port := cfg.DstPort
+	if cfg.Protocol == "icmp" {
+		port = 0
+	}
+	suppression := l3.StartBackscatterSuppression(cfg.Protocol, port)
+	defer suppression.Stop()
+
 	var proto int
 	switch cfg.Protocol {
 	case "tcp":

@@ -19,12 +19,19 @@ work=$(mktemp -d -t spoof-install.XXXXXX)
 trap 'rm -rf -- "$work"' EXIT
 printf 'Downloading %s\n' "$asset"
 curl -fsSL --retry 2 --connect-timeout 15 --max-time 300 --proto '=https' "$base/$asset" -o "$work/$asset"
-# New releases publish archive checksums. Older packages still verify their
-# embedded binary checksums in the package installer.
-if curl -fsSL --retry 2 --connect-timeout 15 --max-time 60 --proto '=https' "$base/SHA256SUMS" -o "$work/archive-sums" 2>/dev/null; then
-  sum=$(awk -v name="$asset" '$2 == name { print $1 }' "$work/archive-sums")
-  [[ "$sum" =~ ^[a-fA-F0-9]{64}$ ]] || { echo 'Missing archive checksum.' >&2; exit 1; }
-  (cd "$work" && printf '%s  %s\n' "$sum" "$asset" | sha256sum -c -)
-fi
+
+# Enforce mandatory archive checksum verification
+printf 'Downloading SHA256SUMS\n'
+curl -fsSL --retry 2 --connect-timeout 15 --max-time 60 --proto '=https' "$base/SHA256SUMS" -o "$work/archive-sums" || {
+  echo 'Failed to download SHA256SUMS verification file. Aborting installation.' >&2
+  exit 1
+}
+sum=$(awk -v name="$asset" '$2 == name || $2 == "*"name { print $1 }' "$work/archive-sums")
+[[ "$sum" =~ ^[a-fA-F0-9]{64}$ ]] || { echo "Missing or invalid SHA-256 checksum for $asset in SHA256SUMS." >&2; exit 1; }
+(cd "$work" && printf '%s  %s\n' "$sum" "$asset" | sha256sum -c -) || {
+  echo 'Archive checksum verification failed! Downloaded package may be corrupted or modified.' >&2
+  exit 1
+}
+
 tar -xzf "$work/$asset" -C "$work"
 bash "$work/spoof-tunnel-linux-$arch/install.sh"

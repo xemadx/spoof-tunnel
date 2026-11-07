@@ -183,6 +183,24 @@ function EditContent() {
       ws.onmessage = (ev) => {pending.push(String(ev.data));if(pending.length>800)pending=pending.slice(-800);if(!flushTimer)flushTimer=setTimeout(flush,100);};
       ws.onclose = () => {
         if (closed) return;
+        const curToken = localStorage.getItem("token") || "";
+        if (!curToken) {
+          window.location.replace(getBasePath() + "/login/");
+          return;
+        }
+        try {
+          const parts = curToken.split(".");
+          if (parts.length === 3) {
+            const payload = JSON.parse(atob(parts[1]));
+            if (payload.exp && Date.now() >= payload.exp * 1000) {
+              localStorage.removeItem("token");
+              window.location.replace(getBasePath() + "/login/");
+              return;
+            }
+          }
+        } catch {
+          // ignore parsing error
+        }
         setWsState("retry");
         timer = setTimeout(connect, 2500);
       };

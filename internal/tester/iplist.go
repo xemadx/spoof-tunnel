@@ -165,11 +165,11 @@ func parseLineToRange(line string) ([]IPRange, error) {
 	}
 	ip := net.ParseIP(line)
 	if ip == nil {
-		return nil, fmt.Errorf("invalid IP: %s", line)
+		return nil, fmt.Errorf("invalid IP format")
 	}
 	ip4 := ip.To4()
 	if ip4 == nil {
-		return nil, fmt.Errorf("only IPv4 supported: %s", line)
+		return nil, fmt.Errorf("only IPv4 supported")
 	}
 	v := binary.BigEndian.Uint32(ip4)
 	return []IPRange{{Start: v, End: v}}, nil
@@ -182,7 +182,7 @@ func parseCIDRToRange(cidr string) ([]IPRange, error) {
 	}
 	ip = ip.To4()
 	if ip == nil {
-		return nil, fmt.Errorf("only IPv4 CIDR supported: %s", cidr)
+		return nil, fmt.Errorf("only IPv4 CIDR supported")
 	}
 	start := binary.BigEndian.Uint32(ip.Mask(ipNet.Mask))
 	ones, bits := ipNet.Mask.Size()
@@ -194,17 +194,17 @@ func parseCIDRToRange(cidr string) ([]IPRange, error) {
 func parseRangeToRange(r string) ([]IPRange, error) {
 	parts := strings.SplitN(r, "-", 2)
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid range format: %s", r)
+		return nil, fmt.Errorf("invalid range format")
 	}
 	startIP := net.ParseIP(strings.TrimSpace(parts[0])).To4()
 	endIP := net.ParseIP(strings.TrimSpace(parts[1])).To4()
 	if startIP == nil || endIP == nil {
-		return nil, fmt.Errorf("invalid IPs in range: %s", r)
+		return nil, fmt.Errorf("invalid IPs in range")
 	}
 	start := binary.BigEndian.Uint32(startIP)
 	end := binary.BigEndian.Uint32(endIP)
 	if start > end {
-		return nil, fmt.Errorf("start IP > end IP in range: %s", r)
+		return nil, fmt.Errorf("start IP > end IP in range")
 	}
 	return []IPRange{{Start: start, End: end}}, nil
 }
@@ -224,11 +224,11 @@ func parseLine(line string) ([]net.IP, error) {
 
 	ip := net.ParseIP(line)
 	if ip == nil {
-		return nil, fmt.Errorf("invalid IP: %s", line)
+		return nil, fmt.Errorf("invalid IP format")
 	}
-	ip = ip.To4()
-	if ip == nil {
-		return nil, fmt.Errorf("only IPv4 supported: %s", line)
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return nil, fmt.Errorf("only IPv4 supported")
 	}
 	return []net.IP{ip}, nil
 }
@@ -240,7 +240,7 @@ func parseCIDR(cidr string) ([]net.IP, error) {
 	}
 	ip = ip.To4()
 	if ip == nil {
-		return nil, fmt.Errorf("only IPv4 CIDR supported: %s", cidr)
+		return nil, fmt.Errorf("only IPv4 CIDR supported")
 	}
 	var ips []net.IP
 	for current := ip.Mask(ipNet.Mask); ipNet.Contains(current); incIP(current) {
@@ -254,17 +254,17 @@ func parseCIDR(cidr string) ([]net.IP, error) {
 func parseRange(r string) ([]net.IP, error) {
 	parts := strings.SplitN(r, "-", 2)
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid range format: %s", r)
+		return nil, fmt.Errorf("invalid range format")
 	}
 	startIP := net.ParseIP(strings.TrimSpace(parts[0])).To4()
 	endIP := net.ParseIP(strings.TrimSpace(parts[1])).To4()
 	if startIP == nil || endIP == nil {
-		return nil, fmt.Errorf("invalid IPs in range: %s", r)
+		return nil, fmt.Errorf("invalid IPs in range")
 	}
 	start := binary.BigEndian.Uint32(startIP)
 	end := binary.BigEndian.Uint32(endIP)
 	if start > end {
-		return nil, fmt.Errorf("start IP > end IP in range: %s", r)
+		return nil, fmt.Errorf("start IP > end IP in range")
 	}
 	ips := make([]net.IP, 0, end-start+1)
 	for i := start; ; i++ {

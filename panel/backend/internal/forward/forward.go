@@ -45,10 +45,13 @@ import (
 
 // Forwarder is one TCP listen -> target pipe.
 type Forwarder struct {
-	ReadyTimeout  time.Duration // Set before Start; zero means five seconds.
-	BindInterface string        // Set before Start; confines target dials to this TUN.
-	ListenAddr    string        // e.g. "0.0.0.0:443"
-	TargetAddr    string        // e.g. "10.77.0.2:443" (peer TUN IP + inbound port)
+	MaxConnections   int           // Max concurrent client connections (default 2048).
+	IdleTimeout      time.Duration // Inactivity timeout for active pipes (default 5 minutes).
+	HalfCloseTimeout time.Duration // Grace period for in-flight response after half-close (default 60 seconds).
+	ReadyTimeout     time.Duration // Set before Start; zero means five seconds.
+	BindInterface    string        // Set before Start; confines target dials to this TUN.
+	ListenAddr       string        // e.g. "0.0.0.0:443"
+	TargetAddr       string        // e.g. "10.77.0.2:443" (peer TUN IP + inbound port)
 
 	lifecycle sync.Mutex
 	cancel    context.CancelFunc
@@ -204,6 +207,15 @@ func (f *Forwarder) acceptLoop(ctx context.Context, ln net.Listener) {
 			_ = conn.Close()
 			return
 		}
+		maxConns := f.MaxConnections
+		if maxConns <= 0 {
+			maxConns = 2048
+		}
+		if len(f.conns)/2 >= maxConns {
+			f.mu.Unlock()
+			_ = conn.Close()
+			continue
+		}
 		f.conns[conn] = struct{}{}
 		f.wg.Add(1)
 		f.mu.Unlock()
@@ -256,26 +268,55 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	f.conns[target] = struct{}{}
 	f.lastErr = ""
 	f.mu.Unlock()
+
+	idle := f.IdleTimeout
+	if idle <= 0 {
+		idle = 5 * time.Minute
+	}
+	halfClose := f.HalfCloseTimeout
+	if halfClose <= 0 {
+		halfClose = 60 * time.Second
+	}
+
 	copied := make(chan struct{}, 2)
 	copyOne := func(dst, src net.Conn, counter *int64) {
 		bufPtr := copyBufPool.Get().(*[]byte)
 		defer copyBufPool.Put(bufPtr)
-		_, copyErr := io.CopyBuffer(&countingWriter{w: dst, counter: counter}, src, *bufPtr)
-		if copyErr != nil {
-			_ = dst.Close()
-			_ = src.Close()
-		} else if tcp, ok := dst.(*net.TCPConn); ok {
-			// EOF finishes only this direction; the response may still be in flight.
-			_ = tcp.CloseWrite()
+		buf := *bufPtr
+		for {
+			_ = src.SetReadDeadline(time.Now().Add(idle))
+			nr, rerr := src.Read(buf)
+			if nr > 0 {
+				_ = dst.SetWriteDeadline(time.Now().Add(idle))
+				nw, werr := dst.Write(buf[:nr])
+				if nw > 0 {
+					atomic.AddInt64(counter, int64(nw))
+				}
+				if werr != nil {
+					_ = dst.Close()
+					_ = src.Close()
+					break
+				}
+			}
+			if rerr != nil {
+				if rerr != io.EOF {
+					_ = dst.Close()
+					_ = src.Close()
+				} else if tcp, ok := dst.(*net.TCPConn); ok {
+					// EOF finishes only this direction; the response may still be in flight.
+					_ = tcp.CloseWrite()
+				}
+				break
+			}
 		}
 		copied <- struct{}{}
 	}
 	go copyOne(target, client, &f.bytesUp)
 	go copyOne(client, target, &f.bytesDown)
 	<-copied
-	// Once one direction finishes, set a deadline on the other direction to avoid goroutine leaks.
-	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
-	_ = target.SetDeadline(time.Now().Add(5 * time.Second))
+	// Once one direction finishes, set generous half-close drain deadline on the remaining direction.
+	_ = client.SetDeadline(time.Now().Add(halfClose))
+	_ = target.SetDeadline(time.Now().Add(halfClose))
 	<-copied
 }
 
