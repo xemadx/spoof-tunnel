@@ -273,6 +273,9 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	go copyOne(target, client, &f.bytesUp)
 	go copyOne(client, target, &f.bytesDown)
 	<-copied
+	// Once one direction finishes, set a deadline on the other direction to avoid goroutine leaks.
+	_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = target.SetDeadline(time.Now().Add(5 * time.Second))
 	<-copied
 }
 

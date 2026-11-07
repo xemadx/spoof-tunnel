@@ -178,8 +178,11 @@ func (p *PacketConn) SendFrom(payload []byte, chosen net.IP) error {
 	b[9] = byte(proto)
 
 	// Rotate source IPv4 round-robin when multiple sources are configured (lockless atomic).
-	idx := p.srcIdx.Add(1) - 1
-	src := p.sources[idx%uint64(len(p.sources))]
+	var src [4]byte
+	if len(p.sources) > 0 {
+		idx := p.srcIdx.Add(1) - 1
+		src = p.sources[idx%uint64(len(p.sources))]
+	}
 	if chosen != nil {
 		copy(src[:], chosen.To4())
 	}

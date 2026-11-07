@@ -10,6 +10,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -71,13 +72,11 @@ func NewCodec(psk, role string) (*Codec, error) {
 }
 
 func (c *Codec) Seal(kind byte, payload []byte) []byte {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.seq++
+	seq := atomic.AddUint64(&c.seq, 1)
 	var h [headerSize]byte
 	copy(h[:], "EML1")
 	copy(h[4:20], c.session[:])
-	binary.BigEndian.PutUint64(h[20:28], c.seq)
+	binary.BigEndian.PutUint64(h[20:28], seq)
 	binary.BigEndian.PutUint64(h[28:36], uint64(time.Now().Unix()))
 	var nonce [12]byte
 	copy(nonce[4:], h[20:28])
