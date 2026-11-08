@@ -509,7 +509,7 @@ func (r *poolRuntime) acceptChunk(m poolMessage) {
 		r.enqueue(poolMessage{Type: "done", Token: m.Token, Digest: m.Digest})
 		return
 	}
-	if m.Token == "" || m.Token != r.requestToken || time.Now().After(r.requestUntil) || m.Total < 1 || m.Total > 8192 || m.Index < 0 || m.Index >= m.Total || len(m.Data) < 1 || len(m.Data) > poolChunkBytes || len(m.Digest) != 64 {
+	if m.Token == "" || m.Token != r.requestToken || time.Now().After(r.requestUntil) || m.Total < 1 || m.Total > 65535 || m.Index < 0 || m.Index >= m.Total || len(m.Data) < 1 || len(m.Data) > poolChunkBytes || len(m.Digest) != 64 {
 		return
 	}
 	if r.rx == nil {

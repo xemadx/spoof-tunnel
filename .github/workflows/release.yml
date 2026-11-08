@@ -68,6 +68,7 @@ jobs:
           merge-multiple: true
       - run: cd packages && sha256sum *.tar.gz > SHA256SUMS
       - name: Sign the release checksums
+        if: env.SPOOF_RELEASE_SIGNING_KEY != ''
         run: |
           go run ./cmd/sign-release --key "$SPOOF_RELEASE_SIGNING_KEY" --file packages/SHA256SUMS --out packages/SHA256SUMS.sig
           test -s packages/SHA256SUMS.sig
