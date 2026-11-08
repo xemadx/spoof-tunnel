@@ -602,17 +602,23 @@ func (m *Manager) resolveL3Binary() string {
 	candidates := []string{
 		filepath.Join(m.configDir, "spoof-l3"),
 		filepath.Join(filepath.Dir(m.binaryPath), "spoof-l3"),
-		"/etc/spoof-panel/spoof-l3",
-		"/usr/local/bin/spoof-l3",
-		"spoof-l3",
+	}
+	if m.binaryPath != "unused" {
+		candidates = append(candidates,
+			"/etc/spoof-panel/spoof-l3",
+			"/usr/local/bin/spoof-l3",
+			"spoof-l3",
+		)
 	}
 	for _, p := range candidates {
 		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 			return p
 		}
 	}
-	if p, err := exec.LookPath("spoof-l3"); err == nil {
-		return p
+	if m.binaryPath != "unused" {
+		if p, err := exec.LookPath("spoof-l3"); err == nil {
+			return p
+		}
 	}
 	return filepath.Join(m.configDir, "spoof-l3")
 }

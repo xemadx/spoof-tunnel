@@ -84,7 +84,7 @@ type Updater struct {
 
 func New(current, dataDir string) *Updater {
 	u := &Updater{current: current, dataDir: dataDir, panelPath: "/opt/spoof-panel/spoof-panel", corePath: filepath.Join(dataDir, "spoof-l3"), unitPath: "/etc/systemd/system/" + Unit, apiBase: repository}
-	u.client = &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(req *http.Request, via []*http.Request) error {
+	u.client = &http.Client{Timeout: 0, CheckRedirect: func(req *http.Request, via []*http.Request) error {
 		if len(via) >= 8 || !downloadHost(req.URL) {
 			return fmt.Errorf("unexpected download redirect")
 		}

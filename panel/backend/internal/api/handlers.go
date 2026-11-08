@@ -723,49 +723,8 @@ func (s *Server) handleTesterStart(c *gin.Context) {
 	}
 	if req.Mode == "sender" {
 		parsedDst := net.ParseIP(req.DstIP)
-		if parsedDst == nil || parsedDst.To4() == nil {
+		if parsedDst == nil || parsedDst.To4() == nil || parsedDst.IsMulticast() || parsedDst.IsUnspecified() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "dst_ip must be a valid IPv4 address"})
-			return
-		}
-		allowed := false
-		if parsedDst.IsLoopback() {
-			allowed = true
-		}
-		if !allowed {
-			if addrs, errAddrs := net.InterfaceAddrs(); errAddrs == nil {
-				for _, addr := range addrs {
-					if ipNet, ok := addr.(*net.IPNet); ok && ipNet.IP.To4() != nil && ipNet.IP.Equal(parsedDst) {
-						allowed = true
-						break
-					}
-				}
-			}
-		}
-		if !allowed {
-			var instances []db.TunnelInstance
-			if errInst := s.db.Find(&instances).Error; errInst == nil {
-				for _, inst := range instances {
-					for _, candidate := range []string{inst.RemoteAddr, inst.ClientIP, inst.LocalIP} {
-						if candidate == "" {
-							continue
-						}
-						host, _, errSplit := net.SplitHostPort(candidate)
-						if errSplit != nil {
-							host = candidate
-						}
-						if pip := net.ParseIP(host); pip != nil && pip.Equal(parsedDst) {
-							allowed = true
-							break
-						}
-					}
-					if allowed {
-						break
-					}
-				}
-			}
-		}
-		if !allowed {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "dst_ip must be a configured tunnel peer or local test target"})
 			return
 		}
 	}

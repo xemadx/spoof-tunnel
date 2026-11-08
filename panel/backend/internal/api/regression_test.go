@@ -2,15 +2,17 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/ParsaKSH/spoof-tunnel/panel/internal/auth"
-	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
-	"github.com/ParsaKSH/spoof-tunnel/panel/internal/manager"
-	"github.com/gorilla/websocket"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/auth"
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
+	"github.com/ParsaKSH/spoof-tunnel/panel/internal/manager"
+	"github.com/gorilla/websocket"
 )
 
 func TestWebsocketAuthenticationDoesNotPutJWTInURL(t *testing.T) {
@@ -140,26 +142,30 @@ func TestTesterStartDestinationAndFileRestrictions(t *testing.T) {
 		t.Fatalf("expected rejection of /etc/shadow, got code=%d body=%s", w.Code, w.Body.String())
 	}
 
-	// 2. Unconfigured public dst_ip in sender mode must be rejected
-	reqBody = `{"mode":"sender","test_id":"0123456789abcdef0123456789abcdef","protocol":"icmp","dst_ip":"8.8.8.8","ip_list":"1.1.1.1","timeout":10,"packet_count":10,"max_packet_loss":0}`
-	req = httptest.NewRequest("POST", "/prefix/api/tester/start", strings.NewReader(reqBody))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	server.Router().ServeHTTP(w, req)
-	if w.Code != 400 || !strings.Contains(w.Body.String(), "configured tunnel peer or local test target") {
-		t.Fatalf("expected rejection of unconfigured public dst_ip, got code=%d body=%s", w.Code, w.Body.String())
+	// 2. Invalid dst_ip (multicast, unspecified, non-IPv4) in sender mode must be rejected
+	for _, invalidIP := range []string{"224.0.0.1", "0.0.0.0", "not-an-ip", "2001:db8::1"} {
+		reqBody = fmt.Sprintf(`{"mode":"sender","test_id":"0123456789abcdef0123456789abcdef","protocol":"icmp","dst_ip":%q,"ip_list":"1.1.1.1","timeout":10,"packet_count":10,"max_packet_loss":0}`, invalidIP)
+		req = httptest.NewRequest("POST", "/prefix/api/tester/start", strings.NewReader(reqBody))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w = httptest.NewRecorder()
+		server.Router().ServeHTTP(w, req)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), "dst_ip must be a valid IPv4 address") {
+			t.Fatalf("expected rejection of invalid dst_ip %s, got code=%d body=%s", invalidIP, w.Code, w.Body.String())
+		}
 	}
 
-	// 3. Local test target (loopback 127.0.0.1) must be allowed
-	reqBody = `{"mode":"sender","test_id":"0123456789abcdef0123456789abcdef","protocol":"icmp","dst_ip":"127.0.0.1","ip_list":"1.1.1.1","timeout":10,"packet_count":10,"max_packet_loss":0}`
-	req = httptest.NewRequest("POST", "/prefix/api/tester/start", strings.NewReader(reqBody))
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	w = httptest.NewRecorder()
-	server.Router().ServeHTTP(w, req)
-	if strings.Contains(w.Body.String(), "dst_ip must be a configured tunnel peer") {
-		t.Fatalf("expected loopback dst_ip to be allowed, got body=%s", w.Body.String())
+	// 3. Any valid unicast IPv4 dst_ip (public or loopback) must be allowed without tunnel peer restrictions
+	for _, targetIP := range []string{"8.8.8.8", "127.0.0.1"} {
+		reqBody = fmt.Sprintf(`{"mode":"sender","test_id":"0123456789abcdef0123456789abcdef","protocol":"icmp","dst_ip":%q,"ip_list":"1.1.1.1","timeout":10,"packet_count":10,"max_packet_loss":0}`, targetIP)
+		req = httptest.NewRequest("POST", "/prefix/api/tester/start", strings.NewReader(reqBody))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w = httptest.NewRecorder()
+		server.Router().ServeHTTP(w, req)
+		if strings.Contains(w.Body.String(), "dst_ip must be a configured tunnel peer") || strings.Contains(w.Body.String(), "dst_ip must be a valid IPv4 address") {
+			t.Fatalf("expected valid dst_ip %s to be allowed, got body=%s", targetIP, w.Body.String())
+		}
 	}
 }
 
