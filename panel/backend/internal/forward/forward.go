@@ -229,6 +229,10 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	defer f.wg.Done()
 	defer func() { _ = client.Close(); f.mu.Lock(); delete(f.conns, client); f.mu.Unlock() }()
 
+	if ctx.Err() != nil {
+		return
+	}
+
 	if f.IsReady != nil && !f.IsReady() {
 		f.mu.Lock()
 		f.lastErr = "tunnel peer is disconnected"

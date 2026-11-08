@@ -127,4 +127,3 @@ func TestReplayFilterRejectsFramesBeforeStartup(t *testing.T) {
 		t.Fatal("accepted frame from before receiver process start time")
 	}
 }
-

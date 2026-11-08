@@ -247,4 +247,3 @@ func TestIsReadyRejectsWhenPeerDisconnected(t *testing.T) {
 		t.Fatalf("unexpected error when ready: %s", fwd.Stats().LastError)
 	}
 }
-

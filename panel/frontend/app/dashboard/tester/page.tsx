@@ -162,9 +162,18 @@ const next = await api.testerStatus();
   const handleCopyPassedIPs = async () => {
     try {
       const all = await api.testerResults();
-      await navigator.clipboard.writeText((all.results || []).filter(result => result.passed).map(result => result.ip).join("\n"));
-      setCopied(true); toast.success("همهٔ آدرس‌های تأییدشده کپی شدند."); setTimeout(() => setCopied(false), 2000);
-    } catch (e) { setError(e instanceof Error ? e.message : "کپی ممکن نشد؛ از دانلود استفاده کنید."); }
+      const text = (all.results || []).filter((result) => result.passed).map((result) => result.ip).join("\n");
+      const ok = await copyText(text);
+      if (ok) {
+        setCopied(true);
+        toast.success("همهٔ آدرس‌های تأییدشده کپی شدند.");
+        setTimeout(() => setCopied(false), 2000);
+      } else {
+        toast.error("کپی ممکن نشد؛ از دانلود استفاده کنید.");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "کپی ممکن نشد؛ از دانلود استفاده کنید.");
+    }
   };
 
   const handleDownloadPassedIPs = async () => {

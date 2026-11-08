@@ -298,3 +298,72 @@ func TestPoolProbesProgressDuringLargeManifest(t *testing.T) {
 	}
 	t.Fatal("quality probes were starved by a large outgoing manifest", ra.snapshot(0, 5, ""))
 }
+
+func TestSenderRetransmitsMissingChunksWithoutCloggingControlQueue(t *testing.T) {
+	conn := &PacketConn{pool: NewSourcePool(nil, PoolPolicy{Mode: "legacy"}), peers: map[string]bool{}}
+	cfg := Config{AutoPeerSync: true, PoolPolicy: PoolPolicy{Mode: "adaptive", ProbePPS: 25}}
+	r := newPoolRuntime(cfg, conn, nil)
+
+	chunks := make([][]byte, 100)
+	for i := range chunks {
+		chunks[i] = make([]byte, 160)
+	}
+	r.tx = &poolTransfer{
+		token:  "test-token",
+		digest: "test-digest",
+		chunks: chunks,
+		until:  time.Now().Add(time.Minute),
+	}
+
+	missing := make([]uint16, 64)
+	for i := range missing {
+		missing[i] = uint16(i)
+	}
+	msg := poolMessage{
+		Type:    "need",
+		Token:   "test-token",
+		Missing: missing,
+	}
+	raw, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Deliver 4 consecutive need messages with missing chunks
+	for i := 0; i < 4; i++ {
+		r.receive(raw, "1.2.3.4")
+	}
+
+	// r.queue must NOT contain retransmit chunks!
+	if len(r.queue) != 0 {
+		t.Fatalf("r.queue should be empty of chunks, got %d items", len(r.queue))
+	}
+
+	// Missing chunks must be queued in r.tx.retransmit (deduplicated to 64 items)
+	r.mu.Lock()
+	retransCount := len(r.tx.retransmit)
+	r.mu.Unlock()
+	if retransCount != 64 {
+		t.Fatalf("expected 64 deduplicated retransmit indices in r.tx.retransmit, got %d", retransCount)
+	}
+
+	// nextChunk must serve retransmitted chunks in order
+	now := time.Now()
+	for i := 0; i < 64; i++ {
+		m, ok := r.nextChunk(now)
+		if !ok || m.Index != i {
+			t.Fatalf("expected retransmit chunk %d, got %v (ok=%v)", i, m.Index, ok)
+		}
+	}
+
+	// After draining retransmits, nextChunk resumes from r.tx.next (0)
+	m, ok := r.nextChunk(now)
+	if !ok || m.Index != 0 {
+		t.Fatalf("expected fresh chunk 0, got %v (ok=%v)", m.Index, ok)
+	}
+
+	// Control queue remains completely unblocked for probe ACKs
+	r.enqueue(poolMessage{Type: "ack", Token: "probe-token"})
+	if len(r.queue) != 1 {
+		t.Fatalf("expected ack in queue, got queue len %d", len(r.queue))
+	}
+}

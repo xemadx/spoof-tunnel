@@ -279,6 +279,16 @@ func (p *SourcePool) NextProbe(now time.Time) (string, net.IP) {
 				}
 			}
 		}
+		if i < 0 {
+			selected := -1
+			for _, candidate := range p.good {
+				q := p.states[candidate]
+				if q.ready && !q.pending && !q.nextProbe.After(now) && (selected < 0 || q.nextProbe.Before(p.states[selected].nextProbe)) {
+					selected = candidate
+				}
+			}
+			i = selected
+		}
 	}
 	// Complete small/MTU confirmation pairs before opening more candidates.
 	for len(p.due) > 0 && p.states[p.due[0].index].version != p.due[0].version {
@@ -685,8 +695,12 @@ func recordPoolOutcome(s *SourceQuality, miss bool) {
 func (p *SourcePool) isSelected(i int) bool { _, ok := p.goodPos[i]; return ok }
 func (p *SourcePool) maintenanceInterval() time.Duration {
 	d := 10 * time.Second
-	if p.policy.ActiveSize > 0 {
-		if n := time.Duration(4*p.policy.ActiveSize) * time.Second / time.Duration(p.policy.ProbePPS); n > d {
+	size := p.policy.ActiveSize
+	if size <= 0 {
+		size = len(p.good)
+	}
+	if size > 0 && p.policy.ProbePPS > 0 {
+		if n := time.Duration(4*size) * time.Second / time.Duration(p.policy.ProbePPS); n > d {
 			d = n
 		}
 	}

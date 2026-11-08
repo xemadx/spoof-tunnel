@@ -90,8 +90,8 @@ func LoadIPListFile(path string) ([]net.IP, error) {
 	return ips, nil
 }
 
-func (c *Config) MergeLocal(listen, remote string, remotePort, recvPort int, spoofIP string, spoofPort int, peerSpoofIP, spoofIPFile, sendTransport, recvTransport string) (
-	oListen, oRemote string, oRemotePort, oRecvPort int, oSpoofIP string, oSpoofPort int, oPeerSpoofIP, oSpoofIPFile, oSendTransport, oRecvTransport string,
+func (c *Config) MergeLocal(listen, remote string, remotePort, recvPort int, spoofIP string, spoofPort int, peerSpoofIP, spoofIPFile, sendTransport, recvTransport, xdpInterface string) (
+	oListen, oRemote string, oRemotePort, oRecvPort int, oSpoofIP string, oSpoofPort int, oPeerSpoofIP, oSpoofIPFile, oSendTransport, oRecvTransport, oXDPInterface string,
 ) {
 	oListen = firstStr(listen, c.Listen, "127.0.0.1:5000")
 	oRemote = firstStr(remote, c.Remote, "")
@@ -103,11 +103,12 @@ func (c *Config) MergeLocal(listen, remote string, remotePort, recvPort int, spo
 	oSpoofIPFile = firstStr(spoofIPFile, c.SpoofIPFile, "")
 	oSendTransport = firstStr(sendTransport, c.SendTransport, "")
 	oRecvTransport = firstStr(recvTransport, c.RecvTransport, "")
+	oXDPInterface = firstStr(xdpInterface, c.XDPInterface, "")
 	return
 }
 
-func (c *Config) MergeRemote(listenPort int, forward, clientIP string, clientPort int, spoofIP string, spoofPort int, peerSpoofIP string, spoofIPFile, sendTransport, recvTransport string) (
-	oListenPort int, oForward, oClientIP string, oClientPort int, oSpoofIP string, oSpoofPort int, oPeerSpoofIP string, oSpoofIPFile, oSendTransport, oRecvTransport string,
+func (c *Config) MergeRemote(listenPort int, forward, clientIP string, clientPort int, spoofIP string, spoofPort int, peerSpoofIP string, spoofIPFile, sendTransport, recvTransport, xdpInterface string) (
+	oListenPort int, oForward, oClientIP string, oClientPort int, oSpoofIP string, oSpoofPort int, oPeerSpoofIP string, oSpoofIPFile, oSendTransport, oRecvTransport, oXDPInterface string,
 ) {
 	oListenPort = firstInt(listenPort, c.ListenPort, 8090)
 	oForward = firstStr(forward, c.Forward, "127.0.0.1:51820")
@@ -119,6 +120,7 @@ func (c *Config) MergeRemote(listenPort int, forward, clientIP string, clientPor
 	oSpoofIPFile = firstStr(spoofIPFile, c.SpoofIPFile, "")
 	oSendTransport = firstStr(sendTransport, c.SendTransport, "")
 	oRecvTransport = firstStr(recvTransport, c.RecvTransport, "")
+	oXDPInterface = firstStr(xdpInterface, c.XDPInterface, "")
 	return
 }
 

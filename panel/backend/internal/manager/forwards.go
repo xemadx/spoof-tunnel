@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"time"
 
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/db"
 	"github.com/ParsaKSH/spoof-tunnel/panel/internal/forward"
@@ -78,9 +77,7 @@ func startForwarder(ins *Instance, inst db.TunnelInstance, rule db.ForwardRule) 
 	fwd := forward.New(fmt.Sprintf("0.0.0.0:%d", rule.ListenPort), targetAddr(inst, rule))
 	fwd.BindInterface = inst.TunInterface
 	fwd.IsReady = func() bool {
-		ins.mu.Lock()
-		defer ins.mu.Unlock()
-		return ins.status == StatusRunning && ins.cmd != nil && (ins.telemetry.Peer || ins.telemetry.LastPeer > time.Now().Add(-30*time.Second).Unix() || time.Since(ins.startTime) < 15*time.Second)
+		return ins.forwarderReady.Load()
 	}
 	ins.forwarders[rule.ID] = fwd
 	return fwd.Start()

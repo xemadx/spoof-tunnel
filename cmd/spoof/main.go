@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var Version = "3.1.0"
+var Version = "3.2.1"
 
 func main() {
 	root := &cobra.Command{
@@ -103,8 +103,8 @@ func localCmd() *cobra.Command {
 			}
 
 			if fileCfg != nil {
-				listen, remoteAddr, remotePort, recvPort, spoofIP, spoofPort, peerSpoofIP, spoofIPFile, sendTransport, recvTransport =
-					fileCfg.MergeLocal(listen, remoteAddr, remotePort, recvPort, spoofIP, spoofPort, peerSpoofIP, spoofIPFile, sendTransport, recvTransport)
+				listen, remoteAddr, remotePort, recvPort, spoofIP, spoofPort, peerSpoofIP, spoofIPFile, sendTransport, recvTransport, xdpInterface =
+					fileCfg.MergeLocal(listen, remoteAddr, remotePort, recvPort, spoofIP, spoofPort, peerSpoofIP, spoofIPFile, sendTransport, recvTransport, xdpInterface)
 			}
 
 			if remoteAddr == "" {
@@ -168,8 +168,8 @@ func remoteCmd() *cobra.Command {
 			}
 
 			if fileCfg != nil {
-				listenPort, forward, clientIP, clientPort, spoofIP, spoofPort, peerSpoofIP, spoofIPFile, sendTransport, recvTransport =
-					fileCfg.MergeRemote(listenPort, forward, clientIP, clientPort, spoofIP, spoofPort, peerSpoofIP, spoofIPFile, sendTransport, recvTransport)
+				listenPort, forward, clientIP, clientPort, spoofIP, spoofPort, peerSpoofIP, spoofIPFile, sendTransport, recvTransport, xdpInterface =
+					fileCfg.MergeRemote(listenPort, forward, clientIP, clientPort, spoofIP, spoofPort, peerSpoofIP, spoofIPFile, sendTransport, recvTransport, xdpInterface)
 			}
 
 			if clientIP == "" {

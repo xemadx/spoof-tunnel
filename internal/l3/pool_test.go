@@ -266,3 +266,67 @@ func TestPoolActiveSourceBypassesLargeDiscoveryBacklog(t *testing.T) {
 		t.Fatal("stale measurements still promoted data")
 	}
 }
+
+func TestUnboundedPoolMaintainsAllHealthySourcesAheadOfDiscovery(t *testing.T) {
+	ips := make([]net.IP, 1000)
+	for i := range ips {
+		ips[i] = net.IPv4(192, 0, byte(i>>8), byte(i))
+	}
+	p := NewSourcePool(ips, PoolPolicy{Mode: "adaptive"})
+	now := time.Unix(100000, 0)
+	// Set up 3 healthy sources in good (index 0, 1, 2)
+	for i := 0; i < 3; i++ {
+		p.states[i].ready = true
+		p.states[i].State = "healthy"
+		p.states[i].validUntil = now.Add(time.Minute)
+		p.states[i].nextProbe = now
+		p.good = append(p.good, i)
+		p.goodPos[i] = i
+		p.verified = append(p.verified, i)
+		p.verifiedPos[i] = i
+	}
+	p.best = 0
+	p.active = 0
+
+	// NextProbe should probe candidate 0 (active/best)
+	token1, ip1 := p.NextProbe(now)
+	if token1 == "" || !ip1.Equal(ips[0]) {
+		t.Fatalf("expected active candidate 0, got %v", ip1)
+	}
+
+	// NextProbe should probe candidate 1 (next ready source in good)
+	token2, ip2 := p.NextProbe(now)
+	if token2 == "" || !ip2.Equal(ips[1]) {
+		t.Fatalf("expected good candidate 1, got %v", ip2)
+	}
+
+	// NextProbe should probe candidate 2 (next ready source in good)
+	token3, ip3 := p.NextProbe(now)
+	if token3 == "" || !ip3.Equal(ips[2]) {
+		t.Fatalf("expected good candidate 2, got %v", ip3)
+	}
+}
+
+func TestUnboundedPoolMaintenanceIntervalScales(t *testing.T) {
+	ips := make([]net.IP, 500)
+	for i := range ips {
+		ips[i] = net.IPv4(192, 0, byte(i>>8), byte(i))
+	}
+	p := NewSourcePool(ips, PoolPolicy{Mode: "adaptive", ActiveSize: 0, ProbePPS: 25})
+	for i := 0; i < 200; i++ {
+		p.good = append(p.good, i)
+		p.goodPos[i] = i
+	}
+
+	interval := p.maintenanceInterval()
+	// To maintain 200 sources at 25 PPS without consuming more than 25% of PPS budget,
+	// interval must be at least 4 * 200 / 25 = 32 seconds.
+	expectedMin := 32 * time.Second
+	if interval < expectedMin {
+		t.Fatalf("unbounded pool maintenance interval did not scale with len(good): got %v, expected >= %v", interval, expectedMin)
+	}
+	lifetime := p.qualityLifetime(0)
+	if lifetime < 3*expectedMin {
+		t.Fatalf("unbounded pool quality lifetime did not scale with maintenance interval: got %v, expected >= %v", lifetime, 3*expectedMin)
+	}
+}

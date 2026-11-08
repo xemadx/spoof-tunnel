@@ -95,7 +95,7 @@ func main() {
 		defer stopSignals()
 		ctx, cancel := context.WithTimeout(signalCtx, 15*time.Minute)
 		defer cancel()
-		if err := updater.New(panelVersion, "/etc/spoof-panel").Apply(ctx); err != nil {
+		if err := updater.New(panelVersion, dataDir).Apply(ctx); err != nil {
 			log.Fatal(err)
 		}
 		return

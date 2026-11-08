@@ -191,7 +191,8 @@ function EditContent() {
         try {
           const parts = curToken.split(".");
           if (parts.length === 3) {
-            const payload = JSON.parse(atob(parts[1]));
+            const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+            const payload = JSON.parse(atob(b64));
             if (payload.exp && Date.now() >= payload.exp * 1000) {
               localStorage.removeItem("token");
               window.location.replace(getBasePath() + "/login/");

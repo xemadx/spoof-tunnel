@@ -32,12 +32,12 @@ type replay struct {
 }
 type Codec struct {
 	startTime int64
-	mu      sync.RWMutex
-	tx, rx  []byte
-	txAEAD  cipher.AEAD
-	session [16]byte
-	seq     uint64
-	peers   map[[16]byte]*replay
+	mu        sync.RWMutex
+	tx, rx    []byte
+	txAEAD    cipher.AEAD
+	session   [16]byte
+	seq       uint64
+	peers     map[[16]byte]*replay
 }
 
 func derive(key []byte, label string) []byte {

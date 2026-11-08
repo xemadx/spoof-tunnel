@@ -79,8 +79,8 @@ func StartBackscatterSuppression(proto string, port int) *BackscatterSuppression
 			if err == nil {
 				s.dummyUDP = conn
 			} else {
-				// Fallback to iptables drop rule if port cannot be bound
-				rule := []string{"-p", "icmp", "--icmp-type", "port-unreachable", "-m", "comment", "--comment", fmt.Sprintf("spoof-tunnel-%d-unreach-%d", pid, port), "-j", "DROP"}
+				// Fallback to iptables drop rule if port cannot be bound. Exclude sp+ TUN interfaces.
+				rule := []string{"!", "-o", "sp+", "-p", "icmp", "--icmp-type", "port-unreachable", "-m", "comment", "--comment", fmt.Sprintf("spoof-tunnel-%d-unreach-%d", pid, port), "-j", "DROP"}
 				s.addIptablesRule(rule)
 			}
 		}

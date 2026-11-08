@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ParsaKSH/spoof-tunnel/internal/l3"
@@ -59,8 +60,9 @@ type Instance struct {
 	subs  map[int]chan string
 
 	// Reverse-tunnel forwarders for this instance, by rule ID.
-	fwdMu      sync.Mutex
-	forwarders map[uint]*forward.Forwarder
+	fwdMu          sync.Mutex
+	forwarders     map[uint]*forward.Forwarder
+	forwarderReady atomic.Bool
 
 	// Peer-loss watchdog: restarts a tunnel whose peer stays lost after
 	// it was connected. wdPeerSeen records that the peer was connected
@@ -335,6 +337,7 @@ func (m *Manager) startInstance(id uint) (err error) {
 	inst.status = StatusRunning
 	inst.error = ""
 	inst.startTime = time.Now()
+	inst.forwarderReady.Store(true)
 
 	// Preserve the crash context across automatic recovery; manual starts reset it.
 	if !inst.recovering {
@@ -361,9 +364,8 @@ func (m *Manager) startInstance(id uint) (err error) {
 	}
 	go func() {
 		err := cmd.Wait()
-		// If the tunnel process died on its own, its entry forwarders
-		// must not keep accepting clients into a dead TUN.
 		inst.mu.Lock()
+		inst.forwarderReady.Store(false)
 		stopForwarders(inst)
 		if inst.cmd == cmd {
 			inst.cmd = nil
@@ -408,6 +410,7 @@ func (m *Manager) StopInstance(id uint) error {
 func (m *Manager) stopInstance(id uint) error {
 	inst := m.getInstance(id)
 	inst.mu.Lock()
+	inst.forwarderReady.Store(false)
 	// Serialize the state transition and listener shutdown with forward starts.
 	stopForwarders(inst)
 	if inst.cmd == nil || inst.cmd.Process == nil {
@@ -684,6 +687,7 @@ func streamLogs(inst *Instance, reader io.Reader, generation ...uint64) {
 				inst.mu.Lock()
 				if len(generation) == 0 || inst.processGeneration == generation[0] {
 					inst.telemetry = stats
+					inst.updateForwarderReady()
 				}
 				inst.mu.Unlock()
 			}
@@ -729,6 +733,11 @@ func (m *Manager) Telemetry(id uint) l3.Stats {
 		s.WatchdogLastRestart = inst.wdLastRestart.Unix()
 	}
 	return s
+}
+
+func (inst *Instance) updateForwarderReady() {
+	ready := inst.status == StatusRunning && inst.cmd != nil && (inst.telemetry.Peer || inst.telemetry.LastPeer > time.Now().Add(-30*time.Second).Unix() || time.Since(inst.startTime) < 15*time.Second)
+	inst.forwarderReady.Store(ready)
 }
 
 // Called with mu held. A new explicit action invalidates every queued recovery.

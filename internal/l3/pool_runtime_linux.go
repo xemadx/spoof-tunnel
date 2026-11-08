@@ -50,6 +50,7 @@ type poolTransfer struct {
 	chunks        [][]byte
 	next          int
 	until         time.Time
+	retransmit    []int
 }
 type poolReceive struct {
 	lastFresh     time.Time
@@ -327,7 +328,17 @@ func (r *poolRuntime) nextChunk(now time.Time) (poolMessage, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	t := r.tx
-	if t == nil || now.After(t.until) || t.next >= len(t.chunks) {
+	if t == nil || now.After(t.until) {
+		return poolMessage{}, false
+	}
+	if len(t.retransmit) > 0 {
+		i := t.retransmit[0]
+		t.retransmit = t.retransmit[1:]
+		if i >= 0 && i < len(t.chunks) {
+			return poolMessage{Type: "chunk", Token: t.token, Digest: t.digest, Index: i, Total: len(t.chunks), Rate: r.cfg.PoolPolicy.Normalized().ProbePPS, Data: t.chunks[i]}, true
+		}
+	}
+	if t.next >= len(t.chunks) {
 		return poolMessage{}, false
 	}
 	i := t.next
@@ -356,7 +367,7 @@ func (r *poolRuntime) maintain(now time.Time) {
 			r.lastRequest = now
 		}
 	}
-	if r.rx != nil && now.Sub(r.rx.lastFresh) >= 500*time.Millisecond {
+	if r.rx != nil && now.Sub(r.rx.lastFresh) >= 2*time.Second {
 		r.rx.lastFresh = now
 		missing := []uint16{}
 		for i, b := range r.rx.chunks {
@@ -371,11 +382,11 @@ func (r *poolRuntime) maintain(now time.Time) {
 			r.enqueue(poolMessage{Type: "need", Token: r.rx.token, Missing: missing})
 		}
 	}
-	if r.tx != nil && !r.tx.done && r.tx.next >= len(r.tx.chunks) && now.Sub(r.tx.lastRetry) >= time.Second {
+	if r.tx != nil && !r.tx.done && r.tx.next >= len(r.tx.chunks) && len(r.tx.retransmit) == 0 && now.Sub(r.tx.lastRetry) >= time.Second {
 		t := r.tx
 		i := len(t.chunks) - 1
 		if i >= 0 {
-			r.enqueue(poolMessage{Type: "chunk", Token: t.token, Digest: t.digest, Index: i, Total: len(t.chunks), Rate: r.cfg.PoolPolicy.Normalized().ProbePPS, Data: t.chunks[i]})
+			t.retransmit = append(t.retransmit, i)
 		}
 		t.lastRetry = now
 	}
@@ -473,8 +484,18 @@ func (r *poolRuntime) receive(data []byte, observed string) {
 			return
 		}
 		for _, i := range m.Missing {
-			if int(i) < len(r.tx.chunks) {
-				r.enqueue(poolMessage{Type: "chunk", Token: m.Token, Digest: r.tx.digest, Index: int(i), Total: len(r.tx.chunks), Rate: r.cfg.PoolPolicy.Normalized().ProbePPS, Data: r.tx.chunks[i]})
+			idx := int(i)
+			if idx < len(r.tx.chunks) {
+				exists := false
+				for _, cur := range r.tx.retransmit {
+					if cur == idx {
+						exists = true
+						break
+					}
+				}
+				if !exists {
+					r.tx.retransmit = append(r.tx.retransmit, idx)
+				}
 			}
 		}
 	case "chunk":

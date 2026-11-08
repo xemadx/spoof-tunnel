@@ -151,7 +151,9 @@ async function request<T>(
     });
     if (res.status === 401 && path !== "/auth/login") {
       clearToken();
-      window.location.replace(getBasePath() + "/login/");
+      if (typeof window !== "undefined") {
+        window.location.replace(getBasePath() + "/login/");
+      }
       throw new Error("نشست شما منقضی شده است؛ دوباره وارد شوید.");
     }
     let data: unknown;
