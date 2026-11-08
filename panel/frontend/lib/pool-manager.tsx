@@ -1052,7 +1052,18 @@ export function PoolManager({
                     )}
                   </td>
                   <td>
-                    {row.replies ? `${num(Math.round(row.rtt_ms))} ms` : "—"}
+                    {row.replies ? (
+                      <>
+                        {num(Math.round(row.rtt_ms))} ms
+                        {row.jitter_ms ? (
+                          <small className="muted" style={{ marginRight: 4, display: "inline-block" }}>
+                            {` (±${num(Math.round(row.jitter_ms))})`}
+                          </small>
+                        ) : null}
+                      </>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
                     <bdi dir="ltr">

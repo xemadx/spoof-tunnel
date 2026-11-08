@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"os"
 	"os/exec"
@@ -73,8 +74,14 @@ func NewTaggedPacketConn(c Config, tag []byte) (*PacketConn, error) {
 		syscall.Close(fd)
 		return nil, err
 	}
+	_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, 12 /* SO_PRIORITY */, 6)
 	_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 4*1024*1024)
 	_ = recv.SetReadBuffer(8 * 1024 * 1024)
+	if rc, err := recv.SyscallConn(); err == nil {
+		_ = rc.Control(func(s uintptr) {
+			_ = syscall.SetsockoptInt(int(s), syscall.SOL_SOCKET, 12 /* SO_PRIORITY */, 6)
+		})
+	}
 
 	rawSources, err := c.Sources()
 	if err != nil {
@@ -173,6 +180,7 @@ func (p *PacketConn) SendFrom(payload []byte, chosen net.IP) error {
 	}
 	b := make([]byte, 20+extra+len(payload))
 	b[0] = 0x45
+	b[1] = 0x10 // IPTOS_LOWDELAY (low delay interactive flag for minimal latency and jitter)
 	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
 	b[8] = 64
 	b[9] = byte(proto)
@@ -329,7 +337,7 @@ func openTun(c Config) (*os.File, error) {
 	f := os.NewFile(uintptr(fd), "/dev/net/tun")
 	for _, args := range [][]string{
 		{"address", "add", c.Address, "dev", c.Interface},
-		{"link", "set", "dev", c.Interface, "mtu", fmt.Sprint(c.MTU), "txqueuelen", "2000", "up"},
+		{"link", "set", "dev", c.Interface, "mtu", fmt.Sprint(c.MTU), "txqueuelen", "1000", "up"},
 	} {
 		if out, err := exec.Command("ip", args...).CombinedOutput(); err != nil {
 			f.Close()
@@ -386,6 +394,7 @@ func Run(ctx context.Context, c Config) error {
 		s.Peer = s.LastPeer > time.Now().Add(-15*time.Second).Unix() && s.PoolReady
 		if !s.Peer {
 			s.RTTMs = 0
+			s.JitterMs = 0
 		}
 		mu.Unlock()
 		b, _ := json.Marshal(s)
@@ -521,9 +530,18 @@ func Run(ctx context.Context, c Config) error {
 			case 3:
 				mu.Lock()
 				if sent, ok := pending.accept(data, time.Now()); ok {
+					rtt := float64(time.Since(sent).Microseconds()) / 1000
+					if stats.RTTMs > 0 {
+						diff := math.Abs(rtt - stats.RTTMs)
+						if stats.JitterMs == 0 {
+							stats.JitterMs = diff
+						} else {
+							stats.JitterMs = 0.875*stats.JitterMs + 0.125*diff
+						}
+					}
+					stats.RTTMs = rtt
 					runtime.markRoundTrip(time.Since(sent))
 					stats.LastPeer = time.Now().Unix()
-					stats.RTTMs = float64(time.Since(sent).Microseconds()) / 1000
 				}
 				mu.Unlock()
 			}

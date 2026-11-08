@@ -14,6 +14,7 @@ export type Telemetry = {
   drops: number;
   last_peer: number;
   rtt_ms?: number;
+  jitter_ms?: number;
 };
 export type RecoveryState = {
   active: boolean;
@@ -213,6 +214,7 @@ export type SourceQuality = {
   ip: string;
   state: string;
   rtt_ms: number;
+  jitter_ms?: number;
   loss_pct: number;
   probes: number;
   replies: number;

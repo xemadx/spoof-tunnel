@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"math/bits"
 	"net"
 	"sync"
@@ -69,6 +70,7 @@ type SourceQuality struct {
 	IP           string  `json:"ip"`
 	State        string  `json:"state"`
 	RTTMs        float64 `json:"rtt_ms"`
+	JitterMs     float64 `json:"jitter_ms,omitempty"`
 	LossPct      float64 `json:"loss_pct"`
 	Probes       uint64  `json:"probes"`
 	Replies      uint64  `json:"replies"`
@@ -201,7 +203,7 @@ func (p *SourcePool) recomputeBest() {
 		p.best = previous
 	}
 }
-func (p *SourcePool) score(i int) float64 { s := p.states[i]; return s.RTTMs + 20*s.LossPct }
+func (p *SourcePool) score(i int) float64 { s := p.states[i]; return s.RTTMs + 2.0*s.JitterMs + 20*s.LossPct }
 func (p *SourcePool) Select(control bool) (net.IP, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -403,6 +405,7 @@ func (p *SourcePool) Acknowledge(token, observed string, now time.Time) bool {
 		s.observations = 0
 		s.LossPct = 0
 		s.RTTMs = 0
+		s.JitterMs = 0
 	}
 	s.lastAck = now
 	p.referenceRTT = now.Sub(probe.sent)
@@ -414,7 +417,14 @@ func (p *SourcePool) Acknowledge(token, observed string, now time.Time) bool {
 	rtt := float64(now.Sub(probe.sent).Microseconds()) / 1000
 	if s.RTTMs == 0 {
 		s.RTTMs = rtt
+		s.JitterMs = 0
 	} else {
+		diff := math.Abs(rtt - s.RTTMs)
+		if s.JitterMs == 0 {
+			s.JitterMs = diff
+		} else {
+			s.JitterMs = .8*s.JitterMs + .2*diff
+		}
 		s.RTTMs = .8*s.RTTMs + .2*rtt
 	}
 	s.LossPct *= .8

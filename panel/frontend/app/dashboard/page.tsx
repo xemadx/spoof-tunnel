@@ -17,6 +17,7 @@ type Telemetry = {
   drops: number;
   last_peer: number;
   rtt_ms?: number;
+  jitter_ms?: number;
 };
 
 type Instance = {
@@ -220,7 +221,7 @@ export default function Dashboard() {
             <div>
               <div style={{ fontSize: 13, color: "var(--text-muted)" }}>تأخیر واقعی (RTT)</div>
               <div className="mono" style={{ fontSize: 20, fontWeight: 800, color: isPeerConnected ? "var(--accent-cyan)" : "var(--text-muted)" }}>
-                {isPeerConnected && primaryTelemetry?.rtt_ms ? `${fa(Math.round(primaryTelemetry.rtt_ms))} ms` : "—"}
+                {isPeerConnected && primaryTelemetry?.rtt_ms ? `${fa(Math.round(primaryTelemetry.rtt_ms))} ms${primaryTelemetry.jitter_ms ? ` (±${fa(Math.round(primaryTelemetry.jitter_ms))})` : ""}` : "—"}
               </div>
             </div>
 
@@ -366,7 +367,7 @@ export default function Dashboard() {
                       <td className="mono" dir="ltr">
                         ↑ {bytes(t?.tx_bytes)}<br />↓ {bytes(t?.rx_bytes)}
                       </td>
-                      <td className="mono">{peer && t?.rtt_ms ? `${fa(Math.round(t.rtt_ms))} ms` : "—"}</td>
+                      <td className="mono">{peer && t?.rtt_ms ? `${fa(Math.round(t.rtt_ms))} ms${t.jitter_ms ? ` (±${fa(Math.round(t.jitter_ms))})` : ""}` : "—"}</td>
                       <td className="mono">{uptime(i.uptime)}</td>
                       <td>
                         <div className="row">

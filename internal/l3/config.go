@@ -63,6 +63,7 @@ type Stats struct {
 	Drops     uint64  `json:"drops"`
 	LastPeer  int64   `json:"last_peer"`
 	RTTMs     float64 `json:"rtt_ms,omitempty"`
+	JitterMs  float64 `json:"jitter_ms,omitempty"`
 
 	// Peer-loss watchdog counters, set by the panel manager (not the engine).
 	WatchdogRestarts    int   `json:"watchdog_restarts,omitempty"`

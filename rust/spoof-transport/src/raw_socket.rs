@@ -37,6 +37,18 @@ pub fn create_raw_send_socket() -> io::Result<i32> {
         );
     }
 
+    // Set SO_PRIORITY to 6 (interactive priority) for minimal latency and jitter
+    let priority: libc::c_int = 6;
+    unsafe {
+        libc::setsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PRIORITY,
+            &priority as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+    }
+
     Ok(fd)
 }
 

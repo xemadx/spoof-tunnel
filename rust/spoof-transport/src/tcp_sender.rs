@@ -260,7 +260,7 @@ pub fn write_ip_header_only(
     let total_len = (IP_HEADER_LEN + payload_len) as u16;
 
     pkt[0] = 0x45; // Version=4, IHL=5
-    pkt[1] = 0x00;
+    pkt[1] = 0x10; // IPTOS_LOWDELAY (low-delay interactive flag for minimal latency & jitter)
     pkt[2..4].copy_from_slice(&total_len.to_be_bytes());
     pkt[4..6].copy_from_slice(&ip_id.to_be_bytes());
 

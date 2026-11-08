@@ -330,3 +330,53 @@ func TestUnboundedPoolMaintenanceIntervalScales(t *testing.T) {
 		t.Fatalf("unbounded pool quality lifetime did not scale with maintenance interval: got %v, expected >= %v", lifetime, 3*expectedMin)
 	}
 }
+
+func TestPoolJitterAwareSelection(t *testing.T) {
+	ip1 := net.ParseIP("192.0.2.1")
+	ip2 := net.ParseIP("192.0.2.2")
+	p := NewSourcePool([]net.IP{ip1, ip2}, PoolPolicy{Mode: "adaptive"})
+	now := time.Unix(100000, 0)
+
+	// ip1 has RTT fluctuating wildly (high jitter): alternates between 5ms and 35ms -> avg ~20ms, high jitter
+	// ip2 has steady RTT of 24ms with zero jitter
+	for round := 0; round < 6; round++ {
+		// At current time, probe all due IPs
+		for i := 0; i < 2; i++ {
+			token, ipProbe := p.NextProbe(now)
+			if token == "" {
+				continue
+			}
+			rtt := 24 * time.Millisecond
+			if ipProbe.Equal(ip1) {
+				if round%2 == 0 {
+					rtt = 5 * time.Millisecond
+				} else {
+					rtt = 35 * time.Millisecond
+				}
+			}
+			p.Acknowledge(token, ipProbe.String(), now.Add(rtt))
+		}
+		now = now.Add(10 * time.Second)
+	}
+
+	view := p.View(0, 10, "")
+	if view.Healthy < 2 {
+		t.Fatalf("expected both to be healthy, got %d", view.Healthy)
+	}
+
+	// ip2 should have significantly lower jitter than ip1
+	s1 := p.states[p.positions[ip1.String()]]
+	s2 := p.states[p.positions[ip2.String()]]
+	if s2.JitterMs >= s1.JitterMs {
+		t.Fatalf("expected steady ip2 jitter (%f) < jittery ip1 (%f)", s2.JitterMs, s1.JitterMs)
+	}
+
+	// In adaptive mode, low-jitter source ip2 should be chosen over high-jitter ip1
+	selected, err := p.Select(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected.Equal(ip2) {
+		t.Fatalf("expected low-jitter source %v to be selected, got %v (ip1 score=%f, ip2 score=%f)", ip2, selected, p.score(0), p.score(1))
+	}
+}
