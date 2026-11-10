@@ -253,3 +253,38 @@ func TestWatchdogPeerTransitionIsLogged(t *testing.T) {
 	watchdogSetPeer(t, m, c.ID, true)
 	waitFor("peer connection restored")
 }
+
+func TestWatchdogDoesNotRestartWhenPeerAliveButPoolTemporarilyNotReady(t *testing.T) {
+	dir := t.TempDir()
+	m, c := watchdogTestManager(t, dir)
+	if err := m.StartInstance(c.ID); err != nil {
+		t.Fatal(err)
+	}
+	inst := m.getInstance(c.ID)
+	inst.mu.Lock()
+	generation := inst.processGeneration
+	inst.mu.Unlock()
+
+	// Connect peer and pool first
+	watchdogSetPeer(t, m, c.ID, true)
+	if s := m.Telemetry(c.ID); !s.Peer {
+		t.Fatal("expected initial peer connected")
+	}
+
+	// Now simulate transient pool dip (PoolReady: false) while peer control frames are still arriving (LastPeer fresh)
+	inst.mu.Lock()
+	inst.telemetry = l3.Stats{LastPeer: time.Now().Unix(), PoolReady: false, PoolMode: "adaptive"}
+	inst.mu.Unlock()
+
+	if s := m.Telemetry(c.ID); !s.Peer {
+		t.Fatal("expected Telemetry().Peer to remain true while LastPeer is fresh after initial pool readiness")
+	}
+
+	time.Sleep(450 * time.Millisecond)
+	inst.mu.Lock()
+	afterGen, restarts := inst.processGeneration, inst.wdRestarts
+	inst.mu.Unlock()
+	if afterGen != generation || restarts != 0 {
+		t.Fatalf("watchdog falsely restarted live tunnel during transient pool refresh: gen=%d restarts=%d", afterGen, restarts)
+	}
+}

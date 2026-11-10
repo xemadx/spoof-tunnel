@@ -367,3 +367,52 @@ func TestSenderRetransmitsMissingChunksWithoutCloggingControlQueue(t *testing.T)
 		t.Fatalf("expected ack in queue, got queue len %d", len(r.queue))
 	}
 }
+
+func TestReceiverRecoversImmediatelyWhenSenderRestartsMidManifest(t *testing.T) {
+	connA := &PacketConn{pool: NewSourcePool([]net.IP{net.ParseIP("192.0.2.1")}, PoolPolicy{Mode: "legacy"}), peers: map[string]bool{}}
+	connB := &PacketConn{pool: NewSourcePool([]net.IP{net.ParseIP("192.0.2.2")}, PoolPolicy{Mode: "legacy"}), peers: map[string]bool{}}
+	cfg := Config{AutoPeerSync: true, PoolPolicy: PoolPolicy{Mode: "adaptive", ProbePPS: 25}}
+	sender := newPoolRuntime(cfg, connA, nil)
+	receiver := newPoolRuntime(cfg, connB, nil)
+
+	// Simulate receiver mid-transfer with an active token, and sender having restarted (sender.tx == nil)
+	tok := "0123456789abcdef0123456789abcdef"
+	receiver.requestToken = tok
+	receiver.rx = &poolReceive{
+		token:     tok,
+		digest:    "some-digest",
+		chunks:    make([][]byte, 10),
+		received:  1,
+		until:     time.Now().Add(15 * time.Minute),
+		lastChunk: time.Now(),
+	}
+	receiver.rx.chunks[0] = []byte{1, 2, 3, 4}
+
+	// Receiver sends "need" for missing chunks; restarted sender has tx == nil and replies with "cancel"
+	needRaw, err := json.Marshal(poolMessage{Type: "need", Token: tok, Missing: []uint16{1, 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sender.receive(needRaw, "192.0.2.2")
+	if len(sender.queue) != 1 {
+		t.Fatalf("expected sender to enqueue cancel on unknown transfer token, got queue len %d", len(sender.queue))
+	}
+	cancelMsg := <-sender.queue
+	if cancelMsg.Type != "cancel" || cancelMsg.Token != tok {
+		t.Fatalf("expected cancel message with token %q, got %+v", tok, cancelMsg)
+	}
+
+	// Receiver processes "cancel": resets rx and immediately queues a fresh "request"
+	cancelRaw, _ := json.Marshal(cancelMsg)
+	receiver.receive(cancelRaw, "192.0.2.1")
+	if receiver.rx != nil {
+		t.Fatal("expected receiver.rx to be reset to nil after cancel")
+	}
+	if len(receiver.queue) != 1 {
+		t.Fatalf("expected receiver to immediately re-request manifest, got queue len %d", len(receiver.queue))
+	}
+	reqMsg := <-receiver.queue
+	if reqMsg.Type != "request" || reqMsg.Token != tok {
+		t.Fatalf("expected request message with token %q, got %+v", tok, reqMsg)
+	}
+}

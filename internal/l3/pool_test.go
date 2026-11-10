@@ -380,3 +380,55 @@ func TestPoolJitterAwareSelection(t *testing.T) {
 		t.Fatalf("expected low-jitter source %v to be selected, got %v (ip1 score=%f, ip2 score=%f)", ip2, selected, p.score(0), p.score(1))
 	}
 }
+
+func TestPoolPrioritizesPreviouslyProvenSourcesAndProvenFallback(t *testing.T) {
+	ips := make([]net.IP, 500)
+	for i := range ips {
+		ips[i] = net.IPv4(198, 51, byte(i>>8), byte(i+1))
+	}
+	p := NewSourcePool(ips, PoolPolicy{Mode: "adaptive"})
+	now := time.Unix(100000, 0)
+
+	// Fresh pool with no proven sources must return false from ProvenFallback
+	if _, ok := p.ProvenFallback(); ok {
+		t.Fatal("expected ProvenFallback to return false on fresh pool with no verified sources")
+	}
+
+	// Verify source at index 250 (3 consecutive probe ACKs)
+	targetIdx := 250
+	targetIP := ips[targetIdx]
+	p.mu.Lock()
+	for round := 0; round < 3; round++ {
+		tok := fmt.Sprintf("prov-%d", round)
+		p.pending[tok] = sourceProbe{index: targetIdx, sent: now, deadline: now.Add(time.Second)}
+		p.states[targetIdx].pending = true
+		p.mu.Unlock()
+		p.Acknowledge(tok, targetIP.String(), now.Add(10*time.Millisecond))
+		now = now.Add(time.Second)
+		p.mu.Lock()
+	}
+	p.mu.Unlock()
+
+	if !p.Ready() {
+		t.Fatal("expected pool to be ready after 3 probe ACKs")
+	}
+
+	// Expire verification window so pool temporarily has 0 ready sources
+	now = now.Add(10 * time.Minute)
+	p.Expire(now, false)
+	if p.Ready() {
+		t.Fatal("expected pool Ready() to be false after verification window expired")
+	}
+
+	// ProvenFallback must still return targetIP while it is being re-probed
+	fbIP, ok := p.ProvenFallback()
+	if !ok || !fbIP.Equal(targetIP) {
+		t.Fatalf("expected ProvenFallback to return %v, got %v (ok=%v)", targetIP, fbIP, ok)
+	}
+
+	// NextProbe must prioritize re-probing targetIP (which has LastSuccess > 0) ahead of 499 unknown fresh IPs
+	tok, nextIP := p.NextProbe(now)
+	if tok == "" || !nextIP.Equal(targetIP) {
+		t.Fatalf("expected NextProbe to prioritize proven expired source %v, got %v", targetIP, nextIP)
+	}
+}

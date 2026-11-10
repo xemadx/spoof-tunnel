@@ -54,6 +54,7 @@ type poolTransfer struct {
 }
 type poolReceive struct {
 	lastFresh     time.Time
+	lastChunk     time.Time
 	token, digest string
 	chunks        [][]byte
 	received      int
@@ -356,6 +357,10 @@ func (r *poolRuntime) maintain(now time.Time) {
 		r.rx = nil
 	}
 	if r.requestToken != "" {
+		if r.rx != nil && !r.rx.lastChunk.IsZero() && now.Sub(r.rx.lastChunk) >= 10*time.Second {
+			r.rx = nil
+			r.lastRequest = time.Time{}
+		}
 		if now.After(r.requestUntil) {
 			r.view.Status = "error"
 			r.view.Error = "peer source synchronization timed out"
@@ -469,7 +474,16 @@ func (r *poolRuntime) receive(data []byte, observed string) {
 		if r.tx != nil && m.Token == r.tx.token {
 			r.tx = nil
 		}
+		reRequest := false
+		if r.requestToken != "" && m.Token == r.requestToken && r.rx != nil {
+			r.rx = nil
+			r.lastRequest = time.Now()
+			reRequest = true
+		}
 		r.mu.Unlock()
+		if reRequest {
+			r.enqueue(poolMessage{Type: "request", Token: m.Token})
+		}
 	case "done":
 		r.mu.Lock()
 		if r.tx != nil && m.Token == r.tx.token && m.Digest == r.digest {
@@ -479,8 +493,15 @@ func (r *poolRuntime) receive(data []byte, observed string) {
 		r.mu.Unlock()
 	case "need":
 		r.mu.Lock()
-		defer r.mu.Unlock()
-		if r.tx == nil || r.tx.token != m.Token || len(m.Missing) > 64 {
+		if r.tx == nil || r.tx.token != m.Token {
+			r.mu.Unlock()
+			if len(m.Token) == 32 {
+				r.enqueue(poolMessage{Type: "cancel", Token: m.Token})
+			}
+			return
+		}
+		if len(m.Missing) > 64 {
+			r.mu.Unlock()
 			return
 		}
 		for _, i := range m.Missing {
@@ -498,6 +519,7 @@ func (r *poolRuntime) receive(data []byte, observed string) {
 				}
 			}
 		}
+		r.mu.Unlock()
 	case "chunk":
 		r.acceptChunk(m)
 	}
@@ -512,15 +534,16 @@ func (r *poolRuntime) acceptChunk(m poolMessage) {
 	if m.Token == "" || m.Token != r.requestToken || time.Now().After(r.requestUntil) || m.Total < 1 || m.Total > 65535 || m.Index < 0 || m.Index >= m.Total || len(m.Data) < 1 || len(m.Data) > poolChunkBytes || len(m.Digest) != 64 {
 		return
 	}
+	now := time.Now()
 	if r.rx == nil {
 		if m.Rate < 1 || m.Rate > 100 {
 			return
 		}
-		until := time.Now().Add(15*time.Minute + time.Duration(m.Total*3/m.Rate)*time.Second)
+		until := now.Add(15*time.Minute + time.Duration(m.Total*3/m.Rate)*time.Second)
 		if until.After(r.requestUntil) {
 			r.requestUntil = until
 		}
-		r.rx = &poolReceive{token: m.Token, digest: m.Digest, chunks: make([][]byte, m.Total), until: r.requestUntil}
+		r.rx = &poolReceive{token: m.Token, digest: m.Digest, chunks: make([][]byte, m.Total), until: r.requestUntil, lastFresh: now, lastChunk: now}
 	}
 	t := r.rx
 	if t.digest != m.Digest || len(t.chunks) != m.Total {
@@ -529,7 +552,8 @@ func (r *poolRuntime) acceptChunk(m poolMessage) {
 	if t.chunks[m.Index] == nil {
 		t.chunks[m.Index] = append([]byte(nil), m.Data...)
 		t.received++
-		t.lastFresh = time.Now()
+		t.lastFresh = now
+		t.lastChunk = now
 	}
 	r.view.Status = "receiving"
 	r.view.Progress = 100 * t.received / len(t.chunks)

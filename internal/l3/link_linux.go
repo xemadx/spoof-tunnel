@@ -44,6 +44,7 @@ type PacketConn struct {
 	controlTX      []byte
 	peerAccepted   atomic.Bool
 	peerReady      atomic.Bool
+	everReady      atomic.Bool
 	unknownWindow  time.Time
 	unknownCount   int
 }
@@ -151,13 +152,21 @@ func (p *PacketConn) setPeers(peers map[string]bool) {
 func (p *PacketConn) Send(payload []byte) error     { return p.sendSelected(payload, true) }
 func (p *PacketConn) SendData(payload []byte) error { return p.sendSelected(payload, false) }
 func (p *PacketConn) sendSelected(payload []byte, control bool) error {
-	if !control && p.cfg.PoolPolicy.Normalized().Mode != "legacy" && (!p.peerReady.Load() || (p.cfg.AutoPeerSync && !p.peerAccepted.Load())) {
+	if !control && p.cfg.PoolPolicy.Normalized().Mode != "legacy" && ((!p.peerReady.Load() && !p.everReady.Load()) || (p.cfg.AutoPeerSync && !p.peerAccepted.Load())) {
 		return fmt.Errorf("waiting for verified peer readiness and source manifest acknowledgement")
 	}
 	if p.pool != nil {
 		source, err := p.pool.Select(control)
 		if err != nil {
+			if !control && p.everReady.Load() {
+				if fb, ok := p.pool.ProvenFallback(); ok {
+					return p.SendFrom(payload, fb)
+				}
+			}
 			return err
+		}
+		if !control && p.cfg.PoolPolicy.Normalized().Mode != "legacy" && p.peerReady.Load() && (!p.cfg.AutoPeerSync || p.peerAccepted.Load()) {
+			p.everReady.Store(true)
 		}
 		return p.SendFrom(payload, source)
 	}
@@ -391,7 +400,10 @@ func Run(ctx context.Context, c Config) error {
 		if s.PoolMode != "legacy" {
 			s.PoolReady = s.PoolReady && conn.peerReady.Load()
 		}
-		s.Peer = s.LastPeer > time.Now().Add(-15*time.Second).Unix() && s.PoolReady
+		if s.PoolReady {
+			conn.everReady.Store(true)
+		}
+		s.Peer = s.LastPeer > time.Now().Add(-15*time.Second).Unix() && (s.PoolReady || conn.everReady.Load())
 		if !s.Peer {
 			s.RTTMs = 0
 			s.JitterMs = 0

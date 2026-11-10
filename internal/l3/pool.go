@@ -252,6 +252,29 @@ func (p *SourcePool) Select(control bool) (net.IP, error) {
 	}
 	return append(net.IP(nil), p.ips[i]...), nil
 }
+
+// ProvenFallback returns the best non-quarantined source that has previously
+// passed authenticated round-trip verification (LastSuccess > 0). Used when
+// an established link's active pool temporarily expires during re-probing so
+// user data continues flowing without admitting untested or quarantined IPs.
+func (p *SourcePool) ProvenFallback() (net.IP, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	best := -1
+	for i, s := range p.states {
+		if s.State == "quarantined" || s.LastSuccess == 0 {
+			continue
+		}
+		if best < 0 || s.LastSuccess > p.states[best].LastSuccess || (s.LastSuccess == p.states[best].LastSuccess && p.score(i) < p.score(best)) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return nil, false
+	}
+	p.active = best
+	return append(net.IP(nil), p.ips[best]...), true
+}
 func (p *SourcePool) NextProbe(now time.Time) (string, net.IP) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -299,7 +322,7 @@ func (p *SourcePool) NextProbe(now time.Time) (string, net.IP) {
 	if i < 0 && len(p.due) > 0 && !p.due[0].at.After(now) {
 		candidate := p.due[0].index
 		q := p.states[candidate]
-		if !q.ready && !q.pending && q.streak > 0 {
+		if !q.ready && !q.pending && (q.streak > 0 || q.LastSuccess > 0) {
 			heap.Pop(&p.due)
 			i = candidate
 		}
@@ -533,10 +556,11 @@ func (p *SourcePool) Expire(now time.Time, reverseFresh bool) (changed bool) {
 		} else {
 			if s.ready {
 				s.State = "suspect"
+				p.schedule(probe.index, now.Add(time.Second))
 			} else {
 				s.State = "testing"
+				p.schedule(probe.index, now.Add(100*time.Millisecond))
 			}
-			p.schedule(probe.index, now.Add(100*time.Millisecond))
 		}
 	}
 	if p.cohort != nil {

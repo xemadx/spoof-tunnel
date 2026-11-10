@@ -70,6 +70,7 @@ type Instance struct {
 	// start of the current continuous loss. wdRestarts/wdLastRestart
 	// are cumulative across restarts and are reported in telemetry.
 	wdPeerSeen    bool
+	poolEverReady bool
 	wdLostSince   time.Time
 	wdLastRestart time.Time
 	wdRestarts    int
@@ -355,6 +356,7 @@ func (m *Manager) startInstance(id uint) (err error) {
 	done := inst.done
 	// A new process starts a fresh peer-loss observation window.
 	inst.wdPeerSeen = false
+	inst.poolEverReady = false
 	inst.wdLostSince = time.Time{}
 	inst.wdPeerPrev = false
 	inst.wdPeerPrevSet = false
@@ -692,6 +694,9 @@ func streamLogs(inst *Instance, reader io.Reader, generation ...uint64) {
 			if json.Unmarshal([]byte(line[pos:]), &stats) == nil && (stats.Event == "spoof_stats" || stats.Event == "emad_stats") {
 				inst.mu.Lock()
 				if len(generation) == 0 || inst.processGeneration == generation[0] {
+					if stats.PoolReady {
+						inst.poolEverReady = true
+					}
 					inst.telemetry = stats
 					inst.updateForwarderReady()
 				}
@@ -730,8 +735,11 @@ func (m *Manager) Telemetry(id uint) l3.Stats {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	s := inst.telemetry
+	if s.PoolReady {
+		inst.poolEverReady = true
+	}
 	s.Peer = inst.status == StatusRunning && s.LastPeer > time.Now().Add(-15*time.Second).Unix()
-	if s.PoolMode != "" && s.PoolMode != "legacy" {
+	if s.PoolMode != "" && s.PoolMode != "legacy" && !inst.poolEverReady {
 		s.Peer = s.Peer && s.PoolReady
 	}
 	s.WatchdogRestarts = inst.wdRestarts
