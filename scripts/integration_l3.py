@@ -11,15 +11,16 @@ def run(*args,**kwargs):
 def main():
     if os.geteuid()!=0:raise SystemExit('run as root')
     names=[f'spoof-a-{os.getpid()}',f'spoof-b-{os.getpid()}'];processes=[]
+    devs=[f'ema{os.getpid()}',f'emb{os.getpid()}']
     report=[]
     try:
         for n in names:run('ip','netns','add',n)
-        run('ip','link','add','ema0','type','veth','peer','name','emb0')
-        for name,dev,ip,spoof in zip(names,['ema0','emb0'],['192.0.2.1/30','192.0.2.2/30'],['198.51.100.20/32','198.51.100.10/32']):
+        run('ip','link','add',devs[0],'type','veth','peer','name',devs[1])
+        for name,dev,ip,spoof in zip(names,devs,['192.0.2.1/30','192.0.2.2/30'],['198.51.100.20/32','198.51.100.10/32']):
             run('ip','link','set',dev,'netns',name)
             for args in [('link','set','lo','up'),('address','add',ip,'dev',dev),('link','set',dev,'up'),('route','add',spoof,'dev',dev)]:run('ip','-n',name,*args)
-        run('ip','-n',names[0],'route','add','198.51.100.21/32','dev','ema0')
-        run('ip','-n',names[1],'route','add','198.51.100.11/32','dev','emb0')
+        run('ip','-n',names[0],'route','add','198.51.100.21/32','dev',devs[0])
+        run('ip','-n',names[1],'route','add','198.51.100.11/32','dev',devs[1])
         with tempfile.TemporaryDirectory(prefix='spoof-l3-test-') as tmp:
             for send,recv,multi in ([("icmp","tcp",True),("udp","ipip",True),("experimental","experimental",True)] if os.environ.get("SPOOF_SMART_SMOKE") else [(p,p,True) for p in ["icmp","udp","tcp","ipip","experimental"]]+[("icmp","tcp",True)] if os.environ.get("SPOOF_SMART_POOL") else [("udp","udp",False)] if os.environ.get("SPOOF_MTU_TEST") else [(a,b,False) for a in ['icmp','udp','tcp','ipip','experimental'] for b in ['icmp','udp','tcp','ipip','experimental']] + [(p,p,True) for p in ['icmp','udp','tcp','ipip','experimental']]):
                 key=base64.b64encode(os.urandom(32)).decode();case=[];logs=[]

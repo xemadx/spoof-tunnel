@@ -12,22 +12,24 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
-// BackscatterSuppression manages sysctl and iptables drop rules to prevent
+// BackscatterSuppression manages listeners and iptables drop rules to prevent
 // kernel backscatter (ICMP echo reply, TCP RST on closed ports, and ICMP
 // port unreachable) for spoofed packets handled by raw sockets.
 type BackscatterSuppression struct {
-	mu            sync.Mutex
-	sysctlRestore string
-	rules         [][]string
-	dummyUDP      net.PacketConn
+	mu       sync.Mutex
+	rules    [][]string
+	dummyUDP net.PacketConn
 }
+
+var suppressionID atomic.Uint64
 
 // cleanupStaleRules scans the OUTPUT chain for rules added by spoof-tunnel
 // processes that have died (e.g. killed via SIGKILL), cleaning them up.
 func cleanupStaleRules() {
-	out, err := exec.Command("iptables", "-S", "OUTPUT").Output()
+	out, err := exec.Command("iptables", "-w", "5", "-S", "OUTPUT").Output()
 	if err != nil {
 		return
 	}
@@ -41,7 +43,12 @@ func cleanupStaleRules() {
 					// Process is dead, remove stale rule
 					parts := strings.Fields(line)
 					if len(parts) > 2 && parts[0] == "-A" && parts[1] == "OUTPUT" {
-						delArgs := append([]string{"-D", "OUTPUT"}, parts[2:]...)
+						// iptables -S quotes comment values; exec does not invoke a
+						// shell to remove those quotes for us.
+						for i := 2; i < len(parts); i++ {
+							parts[i] = strings.Trim(parts[i], "\"")
+						}
+						delArgs := append([]string{"-w", "5", "-D", "OUTPUT"}, parts[2:]...)
 						_ = exec.Command("iptables", delArgs...).Run()
 					}
 				}
@@ -57,17 +64,23 @@ func StartBackscatterSuppression(proto string, port int) *BackscatterSuppression
 
 	s := &BackscatterSuppression{}
 	pid := os.Getpid()
+	// Multiple receivers in one process must own separate rules, so stopping
+	// one receiver cannot remove another receiver's suppression.
+	owner := fmt.Sprintf("spoof-tunnel-%d-%d", pid, suppressionID.Add(1))
 
 	switch strings.ToLower(proto) {
 	case "icmp":
-		// Drop outgoing ICMP echo-reply on non-TUN interfaces to suppress kernel backscatter
-		// for raw socket spoof frames, without blocking ping responses over TUN interfaces (sp+).
-		rule := []string{"!", "-o", "sp+", "-p", "icmp", "--icmp-type", "echo-reply", "-m", "comment", "--comment", fmt.Sprintf("spoof-tunnel-%d-icmp", pid), "-j", "DROP"}
+		if port < 1 || port > 65535 {
+			return s
+		}
+		// Match only this receiver's echo identifier, independent of TUN name.
+		// Skipping the IPv4 header via IHL also supports IP options.
+		rule := []string{"-p", "icmp", "--icmp-type", "echo-reply", "-m", "u32", "--u32", fmt.Sprintf("0>>22&0x3C@4>>16=0x%04x", port), "-m", "comment", "--comment", owner + "-icmp", "-j", "DROP"}
 		s.addIptablesRule(rule)
 
 	case "tcp":
 		if port > 0 {
-			rule := []string{"-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", fmt.Sprintf("%d", port), "-m", "comment", "--comment", fmt.Sprintf("spoof-tunnel-%d-rst-%d", pid, port), "-j", "DROP"}
+			rule := []string{"-p", "tcp", "--tcp-flags", "RST", "RST", "--sport", fmt.Sprintf("%d", port), "-m", "comment", "--comment", fmt.Sprintf("%s-rst-%d", owner, port), "-j", "DROP"}
 			s.addIptablesRule(rule)
 		}
 
@@ -79,9 +92,9 @@ func StartBackscatterSuppression(proto string, port int) *BackscatterSuppression
 			if err == nil {
 				s.dummyUDP = conn
 			} else {
-				// Fallback to iptables drop rule if port cannot be bound. Exclude sp+ TUN interfaces.
-				rule := []string{"!", "-o", "sp+", "-p", "icmp", "--icmp-type", "port-unreachable", "-m", "comment", "--comment", fmt.Sprintf("spoof-tunnel-%d-unreach-%d", pid, port), "-j", "DROP"}
-				s.addIptablesRule(rule)
+				// An existing listener already suppresses port-unreachable replies.
+				// Never suppress unrelated ICMP errors across the entire host.
+				log.Printf("[backscatter] UDP listener %d unavailable: %v", port, err)
 			}
 		}
 	}
@@ -89,11 +102,11 @@ func StartBackscatterSuppression(proto string, port int) *BackscatterSuppression
 }
 
 func (s *BackscatterSuppression) addIptablesRule(args []string) {
-	checkArgs := append([]string{"-C", "OUTPUT"}, args...)
+	checkArgs := append([]string{"-w", "5", "-C", "OUTPUT"}, args...)
 	if err := exec.Command("iptables", checkArgs...).Run(); err == nil {
 		return
 	}
-	insertArgs := append([]string{"-I", "OUTPUT"}, args...)
+	insertArgs := append([]string{"-w", "5", "-I", "OUTPUT"}, args...)
 	if err := exec.Command("iptables", insertArgs...).Run(); err == nil {
 		s.mu.Lock()
 		s.rules = append(s.rules, args)
@@ -103,7 +116,7 @@ func (s *BackscatterSuppression) addIptablesRule(args []string) {
 	}
 }
 
-// Stop restores previous sysctl settings and removes added iptables rules.
+// Stop closes the listener and removes only this receiver's iptables rules.
 func (s *BackscatterSuppression) Stop() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,17 +127,8 @@ func (s *BackscatterSuppression) Stop() {
 	}
 
 	for _, rule := range s.rules {
-		delArgs := append([]string{"-D", "OUTPUT"}, rule...)
+		delArgs := append([]string{"-w", "5", "-D", "OUTPUT"}, rule...)
 		_ = exec.Command("iptables", delArgs...).Run()
 	}
 	s.rules = nil
-
-	if s.sysctlRestore != "" {
-		// Only restore sysctl if no other spoof-tunnel rules remain active in OUTPUT
-		out, err := exec.Command("iptables", "-S", "OUTPUT").Output()
-		if err != nil || !strings.Contains(string(out), "spoof-tunnel-") {
-			_ = os.WriteFile("/proc/sys/net/ipv4/icmp_echo_ignore_all", []byte(s.sysctlRestore+"\n"), 0644)
-			s.sysctlRestore = ""
-		}
-	}
 }

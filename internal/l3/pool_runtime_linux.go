@@ -453,12 +453,12 @@ func (r *poolRuntime) receive(data []byte, observed string) {
 		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		if r.tx != nil && r.tx.token == m.Token {
-			return
-		}
 		if time.Since(r.lastServedRequest) < 1*time.Second {
 			return
 		}
+		// A receiver with no chunks (or one that discarded a stalled manifest)
+		// repeats the same token. Rebuild the transfer so it can recover even
+		// when every initial chunk was lost. Rate-limit duplicates above.
 		chunks := make([][]byte, 0, (len(r.packed)+poolChunkBytes-1)/poolChunkBytes)
 		for i := 0; i < len(r.packed); i += poolChunkBytes {
 			end := i + poolChunkBytes

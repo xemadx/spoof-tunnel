@@ -1,12 +1,13 @@
 import sys,subprocess,time,json,base64,os,pathlib
 import tempfile
 root=pathlib.Path(tempfile.mkdtemp(prefix='spoof-delay-')); names=[f'review-delay-a-{os.getpid()}',f'review-delay-b-{os.getpid()}'];procs=[];logs=[]
+devs=[f'rvda{os.getpid()}',f'rvdb{os.getpid()}']
 binary=os.environ.get('SPOOF_L3_BINARY',str(pathlib.Path(__file__).resolve().parents[1]/'dist/spoof-l3'))
 def run(*a): return subprocess.run(a,check=True,capture_output=True,text=True)
 try:
  for n in names:run('ip','netns','add',n)
- run('ip','link','add','rvda','type','veth','peer','name','rvdb')
- for i,(n,dev) in enumerate(zip(names,['rvda','rvdb'])):
+ run('ip','link','add',devs[0],'type','veth','peer','name',devs[1])
+ for i,(n,dev) in enumerate(zip(names,devs)):
   run('ip','link','set',dev,'netns',n)
   run('ip','-n',n,'link','set','lo','up');run('ip','-n',n,'address','add',f'192.0.2.{i+1}/30','dev',dev);run('ip','-n',n,'link','set',dev,'up');run('ip','-n',n,'route','add',f'198.51.100.{20 if i==0 else 10}/32','dev',dev)
   run('ip','netns','exec',n,'tc','qdisc','add','dev',dev,'root','netem','delay','1700ms')

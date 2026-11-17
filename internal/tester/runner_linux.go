@@ -149,7 +149,7 @@ func (r *Runner) doReceive(cfg TesterConfig, ranges *IPRangeSet, cancel <-chan s
 	}()
 	port := cfg.DstPort
 	if cfg.Protocol == "icmp" {
-		port = 0
+		port = 0x5354 // Identifier used by buildProbe; leave ordinary ping alone.
 	}
 	suppression := l3.StartBackscatterSuppression(cfg.Protocol, port)
 	defer suppression.Stop()

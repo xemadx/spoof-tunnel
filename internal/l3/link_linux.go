@@ -31,6 +31,7 @@ type PacketConn struct {
 	cfg            Config
 	recv           *net.IPConn
 	send           int
+	sendMu         sync.RWMutex // Keeps Close from recycling a descriptor used by SendFrom.
 	sources        [][4]byte
 	srcIdx         atomic.Uint64
 	peerIP         [4]byte
@@ -173,6 +174,8 @@ func (p *PacketConn) sendSelected(payload []byte, control bool) error {
 	return p.SendFrom(payload, nil)
 }
 func (p *PacketConn) SendFrom(payload []byte, chosen net.IP) error {
+	p.sendMu.RLock()
+	defer p.sendMu.RUnlock()
 	if p.closed.Load() {
 		return net.ErrClosed
 	}
@@ -326,6 +329,8 @@ func (p *PacketConn) Close() {
 	p.closeOnce.Do(func() {
 		p.closed.Store(true)
 		_ = p.recv.Close()
+		p.sendMu.Lock()
+		defer p.sendMu.Unlock()
 		_ = syscall.Close(p.send)
 	})
 }

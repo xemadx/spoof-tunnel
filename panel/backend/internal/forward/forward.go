@@ -63,7 +63,8 @@ type Forwarder struct {
 	lastErr   string
 	// Active pipes, so Stop can close idle long-lived connections
 	// (e.g. a VLESS session) instead of waiting for them forever.
-	conns map[net.Conn]struct{}
+	conns       map[net.Conn]struct{}
+	activePipes int // Includes clients still waiting for their target dial.
 
 	connections int64
 	bytesUp     int64 // client -> target
@@ -212,12 +213,13 @@ func (f *Forwarder) acceptLoop(ctx context.Context, ln net.Listener) {
 		if maxConns <= 0 {
 			maxConns = 2048
 		}
-		if len(f.conns)/2 >= maxConns {
+		if f.activePipes >= maxConns {
 			f.mu.Unlock()
 			_ = conn.Close()
 			continue
 		}
 		f.conns[conn] = struct{}{}
+		f.activePipes++
 		f.wg.Add(1)
 		f.mu.Unlock()
 		atomic.AddInt64(&f.connections, 1)
@@ -227,7 +229,13 @@ func (f *Forwarder) acceptLoop(ctx context.Context, ln net.Listener) {
 
 func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	defer f.wg.Done()
-	defer func() { _ = client.Close(); f.mu.Lock(); delete(f.conns, client); f.mu.Unlock() }()
+	defer func() {
+		_ = client.Close()
+		f.mu.Lock()
+		delete(f.conns, client)
+		f.activePipes--
+		f.mu.Unlock()
+	}()
 
 	if ctx.Err() != nil {
 		return
@@ -292,38 +300,38 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 	}
 
 	copied := make(chan struct{}, 2)
-	var halfClosed atomic.Bool
+	var halfClosed bool
 	var halfCloseDeadline time.Time
 	var hcMu sync.Mutex
+	// Inactivity is shared by both directions: a download must not time out
+	// merely because the client has no more request bytes to send.
+	touch := func() {
+		hcMu.Lock()
+		defer hcMu.Unlock()
+		deadline := halfCloseDeadline
+		if !halfClosed {
+			deadline = time.Now().Add(idle)
+		}
+		_ = client.SetDeadline(deadline)
+		_ = target.SetDeadline(deadline)
+	}
+	touch()
 
 	copyOne := func(dst, src net.Conn, counter *int64) {
 		bufPtr := copyBufPool.Get().(*[]byte)
 		defer copyBufPool.Put(bufPtr)
 		buf := *bufPtr
 		for {
-			hcMu.Lock()
-			if halfClosed.Load() {
-				_ = src.SetReadDeadline(halfCloseDeadline)
-			} else {
-				_ = src.SetReadDeadline(time.Now().Add(idle))
-			}
-			hcMu.Unlock()
-
 			nr, rerr := src.Read(buf)
 			if nr > 0 {
-				hcMu.Lock()
-				if halfClosed.Load() {
-					_ = dst.SetWriteDeadline(halfCloseDeadline)
-				} else {
-					_ = dst.SetWriteDeadline(time.Now().Add(idle))
-				}
-				hcMu.Unlock()
+				touch()
 
 				nw, werr := dst.Write(buf[:nr])
 				if nw > 0 {
 					atomic.AddInt64(counter, int64(nw))
+					touch()
 				}
-				if werr != nil {
+				if werr != nil || nw != nr {
 					_ = dst.Close()
 					_ = src.Close()
 					break
@@ -348,7 +356,7 @@ func (f *Forwarder) pipe(ctx context.Context, client net.Conn) {
 
 	// Once one direction finishes, set generous half-close drain deadline on the remaining direction.
 	hcMu.Lock()
-	halfClosed.Store(true)
+	halfClosed = true
 	halfCloseDeadline = time.Now().Add(halfClose)
 	_ = client.SetDeadline(halfCloseDeadline)
 	_ = target.SetDeadline(halfCloseDeadline)
